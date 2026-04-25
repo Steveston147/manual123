@@ -176,6 +176,78 @@ function shortenText(value: string, maxLength: number) {
   return `${normalized.slice(0, maxLength)}…`;
 }
 
+function stripListPrefixForUi(value: string) {
+  return value
+    .replace(/^\s*(\d+[\.)]|[０-９]+[．.)）]|[①②③④⑤⑥⑦⑧⑨⑩]|[-・●■])\s*/g, "")
+    .trim();
+}
+
+function makeSlideLabel(value: string, index: number) {
+  const text = stripListPrefixForUi(value)
+    .replace(/\s+/g, "")
+    .trim();
+
+  const rules = [
+    { keys: ["問い合わせ", "確認"], label: "内容確認" },
+    { keys: ["参加対象"], label: "参加条件" },
+    { keys: ["大学生"], label: "大学生確認" },
+    { keys: ["大学院生"], label: "大学院生確認" },
+    { keys: ["高校生", "対象外"], label: "対象外判断" },
+    { keys: ["高校生"], label: "高校生確認" },
+    { keys: ["代替"], label: "代替案内" },
+    { keys: ["別窓口"], label: "窓口確認" },
+    { keys: ["最新", "確認"], label: "最新確認" },
+    { keys: ["学内", "指示"], label: "学内確認" },
+    { keys: ["見積"], label: "見積依頼" },
+    { keys: ["発注"], label: "発注" },
+    { keys: ["請求"], label: "請求確認" },
+    { keys: ["納品"], label: "納品確認" },
+    { keys: ["支払"], label: "支払確認" },
+    { keys: ["契約"], label: "契約確認" },
+    { keys: ["アレルギー"], label: "情報確認" },
+    { keys: ["給食"], label: "給食確認" },
+    { keys: ["空港"], label: "送迎確認" },
+    { keys: ["宿泊"], label: "宿泊確認" },
+    { keys: ["保険"], label: "保険確認" },
+    { keys: ["メール"], label: "メール連絡" },
+    { keys: ["学生"], label: "学生対応" },
+    { keys: ["教員"], label: "教員確認" },
+  ];
+
+  const matched = rules.find((rule) =>
+    rule.keys.every((key) => text.includes(key))
+  );
+
+  if (matched) return matched.label;
+
+  const cleaned = text
+    .replace(/してください/g, "")
+    .replace(/確認する/g, "確認")
+    .replace(/確認して/g, "確認")
+    .replace(/必要がある/g, "")
+    .replace(/であること/g, "")
+    .replace(/すること/g, "")
+    .replace(/する/g, "")
+    .replace(/[。．、,]/g, "");
+
+  if (cleaned.length <= 8) return cleaned;
+
+  return `手順${index + 1}`;
+}
+
+function buildBackgroundImagePrompt(payload: AnswerPayload) {
+  const stepCount = Math.max(1, Math.min(payload.steps.length, 6));
+
+  return [
+    "Create a clean 16:9 horizontal background illustration for an internal university administrative manual.",
+    "Theme: international student programme office workflow, administrative staff, student inquiry, documents, email, checklist, decision making, handoff, and follow-up.",
+    `Show about ${stepCount} simple visual stages using only icons and scenes, without any readable text.`,
+    "Style: friendly Japanese ponchi-e style, simple flat illustration, soft pastel colours, calm professional mood, clear composition, generous whitespace.",
+    "Important: do not draw any readable text at all. No Japanese characters, no English words, no numbers, no labels, no captions, no logo, no seal, no stamp, no official emblem, no random letters.",
+    "The final image is only a decorative background. All accurate Japanese labels and workflow text will be added later by HTML/CSS in the app.",
+  ].join(" ");
+}
+
 function buildAskRequest(
   question: string,
   auth: AuthState,
@@ -235,7 +307,7 @@ ${requestBody.question}
       { text: "画面に手順とチェックリストが表示された" },
     ],
     imagePrompt:
-      "16:9横長スライド。日本語ラベル。左から順に「質問入力」→「/api/ask」→「回答JSON」→「画面表示」の流れを青系アクセントのシンプルな業務フロー図で表現。白背景、大きな文字、初心者向け、アイコンと矢印を使う。",
+      "Background image only. No text, no letters, no numbers, no labels. Friendly flat illustration showing a university office workflow with documents, email, checklist, and screen display.",
     imageUrl: "",
     references: ["ローカル確認用モック回答"],
     updatedAt: nowIso(),
@@ -267,7 +339,7 @@ function assistantFromRaw(question: string, raw: unknown): AnswerPayload {
         { text: "担当者依存の表現がない" },
       ],
       imagePrompt:
-        "業務フローを説明するシンプルな1枚イラスト（日本語ラベル付き）",
+        "Background image only. No text, no letters, no numbers, no labels. Friendly flat illustration for an administrative workflow manual.",
       references: ["Notion API 最新ページ", "社内ルール"],
       updatedAt: nowIso(),
       oldPolicyNote:
@@ -296,7 +368,7 @@ function assistantFromRaw(question: string, raw: unknown): AnswerPayload {
         : [{ text: "対象手順を最後まで実施した" }, { text: "記録を保存した" }],
     imagePrompt:
       anyData.imagePrompt ??
-      "担当者が次に取る行動が一目で分かる図解スライドを作成",
+      "Background image only. No text, no letters, no numbers, no labels. Friendly flat illustration for an administrative workflow manual.",
     imageUrl: anyData.imageUrl,
     references: anyData.references ?? ["Notion API 最新版"],
     updatedAt: anyData.updatedAt ?? nowIso(),
@@ -629,12 +701,12 @@ export default function App() {
   async function generateImage(messageId: string, payload: AnswerPayload) {
     if (!auth) return;
 
-    const imagePrompt = payload.imagePrompt.trim();
+    const imagePrompt = buildBackgroundImagePrompt(payload).trim();
 
     if (!imagePrompt) {
       setImageErrors((current) => ({
         ...current,
-        [messageId]: "図解プロンプトが空のため、画像を生成できません。",
+        [messageId]: "背景画像プロンプトが空のため、画像を生成できません。",
       }));
       return;
     }
@@ -775,15 +847,17 @@ export default function App() {
   }
 
   function renderSlidePreview(payload: AnswerPayload) {
-    const slideSteps = payload.steps.slice(0, 4);
-    const slideNotes = payload.checklist.slice(0, 2).map((item) => item.text);
+    const slideSteps = payload.steps.slice(0, 6);
+    const slideNotes = payload.checklist.slice(0, 3).map((item) => item.text);
 
     return (
       <div className="slide-preview-card">
         <div className="slide-preview-header">
           <p className="mini-label">文字崩れ対策版</p>
           <h5>業務フロー図解</h5>
-          <p>日本語文字は画像ではなく、この画面上で正確に表示します。</p>
+          <p>
+            図解の正確な日本語は、画像生成AIではなくこの画面上のHTML/CSSで表示します。
+          </p>
         </div>
 
         <div className="slide-flow-row">
@@ -792,7 +866,7 @@ export default function App() {
               <div className="slide-step-wrap" key={`${step}-${index}`}>
                 <div className="slide-step-card">
                   <span className="slide-step-number">{index + 1}</span>
-                  <p>{shortenText(step, 26)}</p>
+                  <p className="slide-step-title">{makeSlideLabel(step, index)}</p>
                 </div>
 
                 {index < slideSteps.length - 1 && (
@@ -805,12 +879,25 @@ export default function App() {
           )}
         </div>
 
+        {slideSteps.length > 0 && (
+          <div className="slide-detail-list">
+            <p className="mini-label">ステップ詳細</p>
+
+            {slideSteps.map((step, index) => (
+              <div className="slide-detail-item" key={`detail-${step}-${index}`}>
+                <span className="slide-detail-number">{index + 1}</span>
+                <p className="slide-detail-text">{stripListPrefixForUi(step)}</p>
+              </div>
+            ))}
+          </div>
+        )}
+
         {slideNotes.length > 0 && (
           <div className="slide-note-box">
             <p className="mini-label">注意点</p>
             <ul>
               {slideNotes.map((note, index) => (
-                <li key={`${note}-${index}`}>{shortenText(note, 34)}</li>
+                <li key={`${note}-${index}`}>{stripListPrefixForUi(note)}</li>
               ))}
             </ul>
           </div>
@@ -823,6 +910,7 @@ export default function App() {
     const isGeneratingImage = Boolean(imageLoadingIds[messageId]);
     const imageError = imageErrors[messageId];
     const displayImageUrl = generatedImageUrls[messageId] || payload.imageUrl;
+    const backgroundPrompt = buildBackgroundImagePrompt(payload);
     const isPendingAnswer = payload.answer === "回答を生成中です…" && payload.steps.length === 0;
 
     if (isPendingAnswer) {
@@ -886,16 +974,23 @@ export default function App() {
           {renderSlidePreview(payload)}
 
           <div className="image-prompt-box">
-            <p className="mini-label">図解プロンプト</p>
-            <p>{payload.imagePrompt || "（未指定）"}</p>
+            <p className="mini-label">背景画像プロンプト（実際に画像生成へ送信）</p>
+            <p>{backgroundPrompt}</p>
           </div>
+
+          {payload.imagePrompt && (
+            <details className="debug-panel raw-prompt-panel">
+              <summary>AIが返した元の図解プロンプト（参考・画像生成には使いません）</summary>
+              <p className="meta">{payload.imagePrompt}</p>
+            </details>
+          )}
 
           <div className="generated-image-box">
             <button
               type="button"
               className="primary"
               onClick={() => void generateImage(messageId, payload)}
-              disabled={isGeneratingImage || !payload.imagePrompt.trim()}
+              disabled={isGeneratingImage || !backgroundPrompt.trim()}
             >
               {isGeneratingImage
                 ? "背景画像を生成中..."
@@ -1358,7 +1453,8 @@ export default function App() {
 
           <ul>
             <li>NotionはAPI連携で取得（スクレイピング前提にしない）。</li>
-            <li>図解画像はChatGPT API（gpt-image-1）で生成。</li>
+            <li>画像生成AIには文字を描かせず、背景画像だけを生成する。</li>
+            <li>正確な日本語ラベル・手順・注意点はHTML/CSSで表示する。</li>
             <li>修正回答はNotion DBへ直接追記。</li>
             <li>社内利用の認証方式はメール/パスワード。</li>
           </ul>
