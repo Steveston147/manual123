@@ -75,34 +75,44 @@ type GenerateImageRequest = {
   }
   
   function buildFinalPrompt(imagePrompt: string) {
-    return `Create one clean abstract background image for an internal business manual.
+    return `Create one clear business manual illustration based on the user's prompt below.
   
-  Purpose:
-  The image will be used only as a visual background. Japanese text, step names, labels, and notes will be added later by the web application using HTML/CSS.
+  Main goal:
+  Make a friendly, easy-to-understand ponchi-e style diagram for university office work.
+  The image should help a beginner understand the answer visually.
   
-  Strict rules:
-  - Do not include any text.
-  - Do not include Japanese characters.
-  - Do not include English words.
-  - Do not include letters, numbers, captions, labels, signs, logos, watermarks, UI text, document text, or readable writing.
-  - Do not draw fake text, pseudo text, scribbles, or unreadable placeholder letters.
-  - All areas that may contain text should be blank or softly shaded.
-  
-  Image style:
+  Required style:
   - 16:9 horizontal layout
-  - Clean professional business design
-  - White or very light background
-  - Calm blue and slate accents
-  - Abstract workflow feeling
-  - Simple icons without text: documents, check marks, arrows, calendar, people, folders
-  - Left-to-right flow is preferred
-  - Large clear shapes
-  - Minimal, calm, not busy
+  - Ponchi-e style, friendly anime-like business illustration
+  - Clean, simple, and easy to read
+  - Pastel colours, mainly white, light blue, soft mint, and gentle slate
   - Suitable for an internal university office manual
-  - No personal names or confidential details
-  - No photo-realistic people
+  - Use large simple shapes, clear arrows, cards, people, documents, check marks, calendar, folders, and office items
+  - Avoid a busy or overly decorative layout
+  - Keep enough white space
   
-  Visual theme based on this content:
+  Text and label rules:
+  - Include short Japanese labels, numbers, and simple item names when useful.
+  - Keep text minimal.
+  - Use only short labels, ideally 2 to 8 Japanese characters per label.
+  - Use large, bold, readable Japanese text.
+  - Use correct Japanese kanji used in Japan.
+  - Do not use Simplified Chinese characters.
+  - Do not use Traditional Chinese characters.
+  - Do not use Chinese-style kanji forms.
+  - Do not use broken text, garbled text, pseudo text, fake characters, meaningless symbols, or random letters.
+  - Do not use long sentences inside the image.
+  - Do not use real company logos, university logos, trademark logos, or official seals.
+  
+  Recommended visual structure:
+  - Show the workflow from left to right.
+  - Use up to four main steps.
+  - Each step should be shown as a large card or panel.
+  - Use arrows between steps.
+  - Put one short Japanese label in each step box.
+  - Add one small caution or checklist area only if it remains readable.
+  
+  User's diagram prompt:
   ${imagePrompt}`;
   }
   
