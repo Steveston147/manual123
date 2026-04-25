@@ -653,27 +653,86 @@ button.primary {
 
 .ops-panel {
   display: grid;
-  gap: 10px;
+  gap: 16px;
+  text-align: left;
+  justify-items: start;
+  align-items: start;
+  max-width: 920px;
+  margin: 0;
+  padding: 20px;
 }
 
 .ops-panel h2 {
-  margin-top: 0;
+  width: 100%;
+  margin: 0 0 4px;
+  color: #111827;
+  font-size: 23px;
+  line-height: 1.35;
+  text-align: left;
+}
+
+.ops-panel h3 {
+  width: 100%;
+  margin: 18px 0 0;
+  padding-top: 16px;
+  border-top: 1px dashed #cbd5e1;
+  color: #111827;
+  font-size: 18px;
+  line-height: 1.4;
+  text-align: left;
+}
+
+.ops-panel label {
+  width: min(760px, 100%);
+  margin: 0;
+  padding: 12px;
+  border-radius: 14px;
+  background: #f8fbff;
+  border: 1px solid #e2e8f0;
+  text-align: left;
+  color: #1e293b;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.ops-panel input {
+  max-width: 100%;
+  height: 38px;
+  margin-top: 4px;
+  font-size: 13px;
+  background: #ffffff;
+}
+
+.ops-panel label:nth-of-type(4) {
+  width: min(880px, 100%);
+}
+
+.ops-panel label:nth-of-type(4) input {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
 }
 
 .ops-panel .inline {
-  display: flex;
+  display: inline-flex;
+  width: fit-content;
+  min-width: min(420px, 100%);
   align-items: center;
   gap: 8px;
+  padding: 10px 12px;
 }
 
 .ops-panel .inline input {
   width: auto;
+  height: auto;
+  margin-top: 0;
 }
 
 .revision-list {
+  width: min(760px, 100%);
   max-height: 280px;
   overflow: auto;
-  padding-left: 16px;
+  padding-left: 18px;
+  margin: 0;
 }
 
 .revision-list li {
@@ -1201,5 +1260,16 @@ button.primary {
   .guide-panel ul li {
     grid-template-columns: 30px 1fr;
     padding: 10px;
+  }
+
+  .ops-panel {
+    max-width: none;
+    padding: 16px;
+  }
+
+  .ops-panel label,
+  .ops-panel label:nth-of-type(4),
+  .revision-list {
+    width: 100%;
   }
 }
