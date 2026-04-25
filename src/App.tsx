@@ -752,6 +752,28 @@ export default function App() {
     setEditedAnswer("");
   }
 
+  function renderLoadingCard() {
+    return (
+      <div className="loading-card" aria-live="polite">
+        <div className="loading-header">
+          <div className="loading-spinner" />
+          <div>
+            <p className="loading-title">生成中です</p>
+            <p className="loading-subtitle">Notionを確認しながら回答を組み立てています。もう少しお待ちください。</p>
+          </div>
+        </div>
+        <div className="loading-progress">
+          <span />
+        </div>
+        <div className="loading-steps">
+          <span>検索</span>
+          <span>整理</span>
+          <span>回答作成</span>
+        </div>
+      </div>
+    );
+  }
+
   function renderSlidePreview(payload: AnswerPayload) {
     const slideSteps = payload.steps.slice(0, 4);
     const slideNotes = payload.checklist.slice(0, 2).map((item) => item.text);
@@ -801,6 +823,11 @@ export default function App() {
     const isGeneratingImage = Boolean(imageLoadingIds[messageId]);
     const imageError = imageErrors[messageId];
     const displayImageUrl = generatedImageUrls[messageId] || payload.imageUrl;
+    const isPendingAnswer = payload.answer === "回答を生成中です…" && payload.steps.length === 0;
+
+    if (isPendingAnswer) {
+      return renderLoadingCard();
+    }
 
     return (
       <article className="answer-card">
@@ -878,6 +905,13 @@ export default function App() {
             </button>
           </div>
 
+          {isGeneratingImage && (
+            <div className="mini-loading-row">
+              <span className="mini-spinner" />
+              <span>背景画像を生成しています。少し時間がかかります。</span>
+            </div>
+          )}
+
           {imageError && <p className="error">{imageError}</p>}
 
           {displayImageUrl ? (
@@ -949,10 +983,11 @@ export default function App() {
   if (!auth) {
     return (
       <div className="app-shell">
-        <header className="top-header">
-          <div>
+        <header className="top-header app-hero">
+          <div className="hero-copy">
+            <p className="hero-kicker">RSJP Manual Assistant</p>
             <h1>RSJP業務マニュアルAI</h1>
-            <p>社内利用のため、メール/パスワード認証後に利用できます。</p>
+            <p>Notionナレッジを参照し、回答・手順・チェックリストを整理します。</p>
           </div>
         </header>
 
@@ -1011,24 +1046,26 @@ export default function App() {
 
   return (
     <div className="app-shell">
-      <header className="top-header">
-        <div>
+      <header className="top-header app-hero">
+        <div className="hero-copy">
+          <p className="hero-kicker">RSJP Manual Assistant</p>
           <h1>RSJP業務マニュアルAI</h1>
-          <p>
-            Notion APIナレッジを参照し、文章＋手順＋図解指示＋チェックリストを同時出力します。
-          </p>
+          <p>Notionナレッジを参照し、回答・手順・チェックリストを整理します。</p>
         </div>
 
-        <button
-          type="button"
-          onClick={() => {
-            setAuth(null);
-            setPassword("");
-            setError(null);
-          }}
-        >
-          ログアウト
-        </button>
+        <div className="hero-actions">
+          <span className="status-pill">Ready</span>
+          <button
+            type="button"
+            onClick={() => {
+              setAuth(null);
+              setPassword("");
+              setError(null);
+            }}
+          >
+            ログアウト
+          </button>
+        </div>
       </header>
 
       <nav className="tab-row">
@@ -1087,6 +1124,13 @@ export default function App() {
               >
                 {isLoading ? "生成中..." : "回答を生成"}
               </button>
+
+              {isLoading && (
+                <div className="side-loading-note">
+                  <span className="mini-spinner" />
+                  <span>生成中です。回答欄に進行表示が出ています。</span>
+                </div>
+              )}
 
               <p className="meta">
                 現在の送信先: <strong>{settings.qaWebhookUrl || "未設定"}</strong>
