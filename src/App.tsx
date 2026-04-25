@@ -458,6 +458,24 @@ function renderSearchDebug(debug?: SearchDebug) {
   );
 }
 
+function renderHeroCopy() {
+  return (
+    <div className="brand-row">
+      <img
+        src="/creotech-logo.png"
+        alt="株式会社クレオテック"
+        className="brand-logo"
+      />
+
+      <div className="brand-copy">
+        <p className="hero-kicker">RSJP Manual Assistant</p>
+        <h1>RSJP業務マニュアルAI</h1>
+        <p>Notionナレッジを参照し、回答・手順・チェックリストを整理します。</p>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [question, setQuestion] = useState("");
   const [email, setEmail] = useState("");
@@ -1073,11 +1091,7 @@ export default function App() {
     return (
       <div className="app-shell">
         <header className="top-header app-hero">
-          <div className="hero-copy">
-            <p className="hero-kicker">RSJP Manual Assistant</p>
-            <h1>RSJP業務マニュアルAI</h1>
-            <p>Notionナレッジを参照し、回答・手順・チェックリストを整理します。</p>
-          </div>
+          <div className="hero-copy">{renderHeroCopy()}</div>
         </header>
 
         <section className="left-panel login-panel">
@@ -1136,11 +1150,7 @@ export default function App() {
   return (
     <div className="app-shell">
       <header className="top-header app-hero no-print">
-        <div className="hero-copy">
-          <p className="hero-kicker">RSJP Manual Assistant</p>
-          <h1>RSJP業務マニュアルAI</h1>
-          <p>Notionナレッジを参照し、回答・手順・チェックリストを整理します。</p>
-        </div>
+        <div className="hero-copy">{renderHeroCopy()}</div>
 
         <div className="hero-actions">
           <span className="status-pill">Ready</span>
