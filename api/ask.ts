@@ -111,6 +111,15 @@ const MAX_CHILD_DATABASE_PAGES = 45;
 const MAX_RECURSION_DEPTH = 4;
 const MAX_NESTED_BLOCK_DEPTH = 3;
 
+const PONCHI_STYLES = [
+  "親しみやすいポンチ絵風。丸みのある人物と大きなアイコン。淡い水色と白を基調にした清潔な業務マニュアル風。",
+  "シンプルなアニメ調の業務フロー図。やわらかい線、淡いパステルカラー、事務作業が直感的に分かる構成。",
+  "大学事務マニュアル向けのかわいい説明図。人物、書類、チェックマーク、矢印を大きく配置。文字は少なめ。",
+  "フラットデザインのポンチ絵。白背景、淡い青とミント色、角丸カード、太めの矢印で流れを見せる。",
+  "やさしい教材イラスト風。初心者が安心して読める雰囲気。業務ステップを左から右へ見せる。",
+  "ゆるいビジネスアニメ風。人物の表情は明るく、作業の流れが一目で分かる構図。",
+];
+
 function parseBody(body: ApiRequest["body"]): AskRequestBody {
   if (!body) return {};
 
@@ -632,27 +641,92 @@ function createSearchDebug(
   };
 }
 
+function pickPonchiStyle(): string {
+  const index = Math.floor(Math.random() * PONCHI_STYLES.length);
+  return PONCHI_STYLES[index] ?? PONCHI_STYLES[0];
+}
+
+function compactLabel(value: string, maxLength = 12): string {
+  const stripped = stripListPrefix(value)
+    .replace(/\s+/g, "")
+    .replace(/[。．.、,]$/g, "")
+    .trim();
+
+  if (stripped.length <= maxLength) {
+    return stripped;
+  }
+
+  return stripped.slice(0, maxLength);
+}
+
+function buildPonchiImagePrompt(question: string, steps: string[], checklist: ChecklistItem[]): string {
+  const style = pickPonchiStyle();
+  const title = compactLabel(question, 14) || "業務フロー";
+  const stepLabels = steps.slice(0, 4).map((step) => compactLabel(step, 10)).filter(Boolean);
+  const cautionLabels = checklist.slice(0, 2).map((item) => compactLabel(item.text, 12)).filter(Boolean);
+
+  const safeSteps = stepLabels.length > 0 ? stepLabels : ["確認", "依頼", "実施", "完了"];
+  const safeCautions = cautionLabels.length > 0 ? cautionLabels : ["抜け漏れ確認", "最新情報確認"];
+
+  return `16:9横長のポンチ絵風・親しみやすいアニメ調の業務図解を作成する。
+
+図柄:
+${style}
+
+目的:
+大学事務の業務マニュアルとして、新人職員が一目で流れを理解できる図解にする。
+
+文字方針:
+- 文字、数字、短いラベルを入れる。
+- 文字は少なめにする。
+- 長文は禁止。
+- 各ラベルは短く大きく読みやすくする。
+- 日本で使われる正しい日本語の漢字を使う。
+- 中国語の簡体字、繁体字、中国式の漢字は使わない。
+- 日本語として自然な表記にする。
+- 文字化け、崩れた文字、意味不明な文字、疑似文字を入れない。
+- アルファベットのロゴや実在企業ロゴは入れない。
+
+入れる文字:
+タイトル: ${title}
+ステップ: ${safeSteps.join(" → ")}
+注意点: ${safeCautions.join(" / ")}
+
+構図:
+- 左から右へ流れる業務フローにする。
+- ステップは最大4つの大きな箱で表現する。
+- 各箱に短い日本語ラベルを入れる。
+- 矢印、書類、チェックマーク、人物、カレンダーなどのアイコンを使う。
+- 余白を広く取り、見やすくする。
+- 淡いパステルカラー、白背景、青系アクセント。
+- 業務で使える清潔感のある仕上げ。
+- かわいすぎず、大学事務の資料として使える落ち着きにする。`;
+}
+
 function fallbackPayload(message: string, debug?: SearchDebug): AnswerPayload {
+  const fallbackSteps = [
+    "VercelのEnvironment Variablesを確認する",
+    "NOTION_API_KEY と NOTION_DATABASE_ID を確認する",
+    "Notion DBがRSJP Manual AIに共有されているか確認する",
+    "api/ask.tsの内容を確認する",
+    "GitHubへcommit / pushする",
+    "Vercelで再デプロイする",
+    "もう一度質問を送信する",
+  ];
+
+  const fallbackChecklist = [
+    { text: "NOTION_API_KEYが設定されている" },
+    { text: "NOTION_DATABASE_IDが設定されている" },
+    { text: "Notion DBをIntegrationに共有している" },
+    { text: "OPENAI_API_KEYが設定されている" },
+    { text: "Vercelの最新デプロイが成功している" },
+  ];
+
   return {
     answer: message,
-    steps: [
-      "VercelのEnvironment Variablesを確認する",
-      "NOTION_API_KEY と NOTION_DATABASE_ID を確認する",
-      "Notion DBがRSJP Manual AIに共有されているか確認する",
-      "api/ask.tsの内容を確認する",
-      "GitHubへcommit / pushする",
-      "Vercelで再デプロイする",
-      "もう一度質問を送信する",
-    ],
-    checklist: [
-      { text: "NOTION_API_KEYが設定されている" },
-      { text: "NOTION_DATABASE_IDが設定されている" },
-      { text: "Notion DBをIntegrationに共有している" },
-      { text: "OPENAI_API_KEYが設定されている" },
-      { text: "Vercelの最新デプロイが成功している" },
-    ],
-    imagePrompt:
-      "16:9横長。文字なし。白背景と淡い青系アクセント。Vercel、環境変数、Notion共有設定、再デプロイを連想させる抽象的な業務フロー背景。文字、数字、ラベル、ロゴは入れない。",
+    steps: fallbackSteps,
+    checklist: fallbackChecklist,
+    imagePrompt: buildPonchiImagePrompt("API接続確認", fallbackSteps, fallbackChecklist),
     imageUrl: "",
     references: ["Notion / OpenAI API接続確認"],
     updatedAt: new Date().toISOString(),
@@ -725,10 +799,7 @@ function normalizePayload(
         : `「${question}」について回答を生成しましたが、answerが空でした。`,
     steps: normalizedSteps,
     checklist: normalizedChecklist,
-    imagePrompt:
-      typeof data.imagePrompt === "string" && data.imagePrompt.trim()
-        ? data.imagePrompt
-        : "16:9横長。文字なし。白背景と淡い青系アクセント。業務手順を連想させる抽象的な背景。矢印、書類、チェックマーク、人物アイコンのみ。文字、数字、ラベル、ロゴは入れない。",
+    imagePrompt: buildPonchiImagePrompt(question, normalizedSteps, normalizedChecklist),
     imageUrl: typeof data.imageUrl === "string" ? data.imageUrl : "",
     references: normalizeReferences(data.references, references),
     updatedAt:
@@ -1223,10 +1294,14 @@ ${contextText}
 - 必要に応じて「最新の学内ルール・担当部署の指示を確認してください」と入れる
 - referencesには実際に使ったNotionページタイトルのみを入れる
 - imageUrlは空文字にする
-- imagePromptには、文字なしの背景画像を作るための具体的な日本語プロンプトを書く
+- imagePromptには、回答内容を見やすいポンチ絵・親しみやすいアニメ調の業務図解にするための具体的な日本語プロンプトを書く
+- imagePromptでは、短い日本語ラベル、数字、項目名を入れてよい
+- imagePromptでは、文字は少なめ、各ラベルは短く大きく読みやすくする
+- imagePromptでは、日本で使われる正しい日本語漢字を使い、中国語の簡体字・繁体字・中国式漢字を使わないと明記する
+- imagePromptでは、文字化け、崩れた文字、意味不明な文字、疑似文字を入れないと明記する
+- imagePromptでは、実在企業ロゴ、大学ロゴ、商標ロゴは入れないと明記する
 - stepsの各要素には、番号、丸数字、箇条書き記号を入れない
 - checklistの各textには、番号、丸数字、箇条書き記号を入れない
-- imagePromptでは「文字、数字、ラベル、ロゴを入れない」と明記する
 - answer内では「Notionで確認できたこと」「Notionで確認できなかったこと」「次に確認すること」を自然に分ける
 `;
 
