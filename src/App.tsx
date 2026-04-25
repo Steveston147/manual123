@@ -66,6 +66,16 @@ type AuthState = {
   token: string;
 };
 
+type GenerateImageResponse = {
+  ok?: boolean;
+  imageUrl?: string;
+  error?: string;
+  model?: string;
+  size?: string;
+  quality?: string;
+  createdAt?: string;
+};
+
 const STORAGE_KEYS = {
   messages: "rsjp_manual_messages_v3",
   revisions: "rsjp_manual_revisions_v2",
@@ -142,6 +152,18 @@ function isInternalAskApi(url: string) {
 
 function shouldUseLocalMock(url: string) {
   return import.meta.env.DEV && isInternalAskApi(url);
+}
+
+function formatDateTime(value?: string) {
+  if (!value) return "不明";
+
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  return date.toLocaleString("ja-JP");
 }
 
 function buildAskRequest(
@@ -279,36 +301,14 @@ function renderSearchDebug(debug?: SearchDebug) {
   if (!debug) return null;
 
   return (
-    <details
-      style={{
-        marginTop: "18px",
-        border: "1px solid #cbd5e1",
-        borderRadius: "12px",
-        padding: "12px",
-        background: "#f8fafc",
-        textAlign: "left",
-      }}
-    >
-      <summary
-        style={{
-          cursor: "pointer",
-          fontWeight: 700,
-          color: "#0f172a",
-        }}
-      >
-        検索デバッグ（開発確認用）
-      </summary>
+    <details className="debug-panel">
+      <summary>検索デバッグ（開発確認用）</summary>
 
-      <div style={{ marginTop: "12px", display: "grid", gap: "10px" }}>
-        <section>
-          <h4 style={{ margin: "0 0 6px" }}>検索サマリー</h4>
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
-              gap: "8px",
-            }}
-          >
+      <div className="debug-content">
+        <section className="debug-section">
+          <h4>検索サマリー</h4>
+
+          <div className="debug-grid">
             <p className="meta">DBページ数: {debug.databasePageCount}</p>
             <p className="meta">候補ページ数: {debug.seedPageCount}</p>
             <p className="meta">探索ページ数: {debug.discoveredPageCount}</p>
@@ -318,21 +318,13 @@ function renderSearchDebug(debug?: SearchDebug) {
           </div>
         </section>
 
-        <section>
-          <h4 style={{ margin: "0 0 6px" }}>検索語</h4>
+        <section className="debug-section">
+          <h4>検索語</h4>
+
           {debug.searchTerms.length > 0 ? (
-            <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
+            <div className="tag-row">
               {debug.searchTerms.map((term) => (
-                <span
-                  key={term}
-                  style={{
-                    border: "1px solid #bfdbfe",
-                    background: "#eff6ff",
-                    borderRadius: "999px",
-                    padding: "4px 8px",
-                    fontSize: "12px",
-                  }}
-                >
+                <span className="tag" key={term}>
                   {term}
                 </span>
               ))}
@@ -342,10 +334,11 @@ function renderSearchDebug(debug?: SearchDebug) {
           )}
         </section>
 
-        <section>
-          <h4 style={{ margin: "0 0 6px" }}>検索クエリ</h4>
+        <section className="debug-section">
+          <h4>検索クエリ</h4>
+
           {debug.searchQueries.length > 0 ? (
-            <ol>
+            <ol className="compact-list">
               {debug.searchQueries.map((query) => (
                 <li key={query}>{query}</li>
               ))}
@@ -355,29 +348,24 @@ function renderSearchDebug(debug?: SearchDebug) {
           )}
         </section>
 
-        <section>
-          <h4 style={{ margin: "0 0 6px" }}>採用されたNotionページ</h4>
+        <section className="debug-section">
+          <h4>採用されたNotionページ</h4>
+
           {debug.selectedPages.length > 0 ? (
-            <div style={{ display: "grid", gap: "8px" }}>
+            <div className="source-card-list">
               {debug.selectedPages.map((page, index) => (
-                <article
-                  key={`${page.title}-${index}`}
-                  style={{
-                    border: "1px solid #e2e8f0",
-                    borderRadius: "10px",
-                    padding: "10px",
-                    background: "#fff",
-                  }}
-                >
-                  <p style={{ margin: "0 0 4px", fontWeight: 700 }}>
+                <article className="source-card" key={`${page.title}-${index}`}>
+                  <p className="source-title">
                     {index + 1}. {page.title}
                   </p>
+
                   <p className="meta">
                     score: {page.score}
                     {page.lastEditedTime
-                      ? ` / 更新: ${new Date(page.lastEditedTime).toLocaleString("ja-JP")}`
+                      ? ` / 更新: ${formatDateTime(page.lastEditedTime)}`
                       : ""}
                   </p>
+
                   {page.url && (
                     <a
                       href={page.url}
@@ -388,7 +376,8 @@ function renderSearchDebug(debug?: SearchDebug) {
                       Notionページを開く
                     </a>
                   )}
-                  <p className="meta" style={{ marginTop: "6px" }}>
+
+                  <p className="meta source-preview">
                     {page.contentPreview || "本文プレビューなし"}
                   </p>
                 </article>
@@ -411,6 +400,9 @@ export default function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [imageLoadingIds, setImageLoadingIds] = useState<Record<string, boolean>>({});
+  const [imageErrors, setImageErrors] = useState<Record<string, string>>({});
+  const [generatedImageUrls, setGeneratedImageUrls] = useState<Record<string, string>>({});
 
   const [messages, setMessages] = useState<ChatMessage[]>(() =>
     safeParse<ChatMessage[]>(localStorage.getItem(STORAGE_KEYS.messages), [])
@@ -456,6 +448,9 @@ export default function App() {
     setError(null);
     setEditTargetId(null);
     setEditedAnswer("");
+    setImageErrors({});
+    setImageLoadingIds({});
+    setGeneratedImageUrls({});
   }
 
   function loginAsDemoUser() {
@@ -621,6 +616,67 @@ export default function App() {
     }
   }
 
+  async function generateImage(messageId: string, payload: AnswerPayload) {
+    if (!auth) return;
+
+    const imagePrompt = payload.imagePrompt.trim();
+
+    if (!imagePrompt) {
+      setImageErrors((current) => ({
+        ...current,
+        [messageId]: "図解プロンプトが空のため、画像を生成できません。",
+      }));
+      return;
+    }
+
+    setImageLoadingIds((current) => ({ ...current, [messageId]: true }));
+    setImageErrors((current) => {
+      const next = { ...current };
+      delete next[messageId];
+      return next;
+    });
+
+    try {
+      const response = await fetch("/api/generate-image", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${auth.token}`,
+        },
+        body: JSON.stringify({
+          imagePrompt,
+          model: settings.imageModel,
+          size: "1536x1024",
+          quality: "medium",
+        }),
+      });
+
+      const parsed = (await response.json()) as GenerateImageResponse;
+
+      if (!response.ok || !parsed.ok || !parsed.imageUrl) {
+        throw new Error(
+          parsed.error ||
+            `画像生成に失敗しました。HTTP ${response.status}`
+        );
+      }
+
+      setGeneratedImageUrls((current) => ({
+        ...current,
+        [messageId]: parsed.imageUrl!,
+      }));
+    } catch (err) {
+      setImageErrors((current) => ({
+        ...current,
+        [messageId]:
+          err instanceof Error
+            ? err.message
+            : "画像生成で不明なエラーが発生しました。",
+      }));
+    } finally {
+      setImageLoadingIds((current) => ({ ...current, [messageId]: false }));
+    }
+  }
+
   async function saveRevision() {
     if (!editTargetId || !editedAnswer.trim() || !auth) return;
 
@@ -686,84 +742,146 @@ export default function App() {
     setEditedAnswer("");
   }
 
-  function renderAssistant(payload: AnswerPayload) {
+  function renderAssistant(messageId: string, payload: AnswerPayload) {
+    const isGeneratingImage = Boolean(imageLoadingIds[messageId]);
+    const imageError = imageErrors[messageId];
+    const displayImageUrl = generatedImageUrls[messageId] || payload.imageUrl;
+
     return (
       <article className="answer-card">
-        <h3>回答（初心者向け）</h3>
-        <p className="answer-text">{payload.answer}</p>
+        <section className="answer-section answer-section-main">
+          <div className="section-heading-row">
+            <h3>回答（初心者向け）</h3>
+            <span className="section-badge">まず読む</span>
+          </div>
 
-        <h4>手順（この順番で実施）</h4>
-        {payload.steps.length > 0 ? (
-          <ol>
-            {payload.steps.map((step, index) => (
-              <li key={`${step}-${index}`}>{step}</li>
-            ))}
-          </ol>
-        ) : (
-          <p className="meta">手順はまだ生成中です。</p>
-        )}
+          <p className="answer-text">{payload.answer}</p>
+        </section>
 
-        <h4>チェックリスト</h4>
-        {payload.checklist.length > 0 ? (
-          <ul className="checklist">
-            {payload.checklist.map((item, index) => (
-              <li key={`${item.text}-${index}`}>
-                <input type="checkbox" checked={Boolean(item.done)} readOnly />
-                <span>{item.text}</span>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p className="meta">チェックリストはまだ生成中です。</p>
-        )}
+        <section className="answer-section">
+          <div className="section-heading-row">
+            <h4>手順（この順番で実施）</h4>
+            <span className="section-badge">実行順</span>
+          </div>
 
-        <h4>1枚スライド用の図解</h4>
-        <p className="meta">
-          プロンプト: {payload.imagePrompt || "（未指定）"}
-        </p>
+          {payload.steps.length > 0 ? (
+            <ol className="step-list">
+              {payload.steps.map((step, index) => (
+                <li key={`${step}-${index}`}>{step}</li>
+              ))}
+            </ol>
+          ) : (
+            <p className="meta">手順はまだ生成中です。</p>
+          )}
+        </section>
 
-        {payload.imageUrl ? (
-          <>
-            <a
-              href={payload.imageUrl}
-              target="_blank"
-              rel="noreferrer"
-              className="inline-link"
+        <section className="answer-section">
+          <div className="section-heading-row">
+            <h4>チェックリスト</h4>
+            <span className="section-badge">抜け漏れ確認</span>
+          </div>
+
+          {payload.checklist.length > 0 ? (
+            <ul className="checklist">
+              {payload.checklist.map((item, index) => (
+                <li key={`${item.text}-${index}`}>
+                  <input type="checkbox" checked={Boolean(item.done)} readOnly />
+                  <span>{item.text}</span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="meta">チェックリストはまだ生成中です。</p>
+          )}
+        </section>
+
+        <section className="answer-section image-section">
+          <div className="section-heading-row">
+            <h4>1枚スライド用の図解</h4>
+            <span className="section-badge">画像生成</span>
+          </div>
+
+          <div className="image-prompt-box">
+            <p className="mini-label">図解プロンプト</p>
+            <p>{payload.imagePrompt || "（未指定）"}</p>
+          </div>
+
+          <div className="generated-image-box">
+            <button
+              type="button"
+              className="primary"
+              onClick={() => void generateImage(messageId, payload)}
+              disabled={isGeneratingImage || !payload.imagePrompt.trim()}
             >
-              画像を開く
-            </a>
-            <img
-              src={payload.imageUrl}
-              alt="生成された1枚スライド"
-              style={{
-                width: "100%",
-                marginTop: "12px",
-                borderRadius: "12px",
-                border: "1px solid #e2e8f0",
-              }}
-            />
-          </>
-        ) : (
-          <p className="meta">
-            画像URL未生成（画像生成APIの接続後に表示されます）。
-          </p>
-        )}
+              {isGeneratingImage
+                ? "図解画像を生成中..."
+                : displayImageUrl
+                  ? "図解画像を再生成"
+                  : "図解画像を生成"}
+            </button>
+          </div>
 
-        <h4>最新情報ポリシー</h4>
-        <p className="meta">最新更新日時: {payload.updatedAt ?? "不明"}</p>
-        <p className="meta">
-          過去運用メモ: {payload.oldPolicyNote ?? "未取得"}
-        </p>
+          {imageError && <p className="error">{imageError}</p>}
+
+          {displayImageUrl ? (
+            <div className="generated-image-box">
+              <a
+                href={displayImageUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-link"
+              >
+                画像を開く
+              </a>
+
+              <img
+                src={displayImageUrl}
+                alt="生成された1枚スライド"
+                className="generated-image"
+              />
+            </div>
+          ) : (
+            <div className="image-empty-box">
+              <p className="image-empty-title">図解画像はまだ生成されていません。</p>
+              <p className="meta">
+                上の「図解画像を生成」を押すと、この欄に1枚の説明画像を表示します。
+              </p>
+            </div>
+          )}
+        </section>
+
+        <section className="answer-section">
+          <div className="section-heading-row">
+            <h4>最新情報ポリシー</h4>
+            <span className="section-badge">確認用</span>
+          </div>
+
+          <div className="info-grid">
+            <div>
+              <p className="mini-label">最新更新日時</p>
+              <p className="meta">{formatDateTime(payload.updatedAt)}</p>
+            </div>
+
+            <div>
+              <p className="mini-label">過去運用メモ</p>
+              <p className="meta">{payload.oldPolicyNote ?? "未取得"}</p>
+            </div>
+          </div>
+        </section>
 
         {payload.references && payload.references.length > 0 && (
-          <>
-            <h4>参照元</h4>
-            <ul>
+          <section className="answer-section">
+            <div className="section-heading-row">
+              <h4>参照元</h4>
+              <span className="section-badge">根拠</span>
+            </div>
+
+            <ul className="reference-list">
               {payload.references.map((ref) => (
                 <li key={ref}>{ref}</li>
               ))}
             </ul>
-          </>
+          </section>
         )}
 
         {renderSearchDebug(payload.debug?.search)}
@@ -775,8 +893,10 @@ export default function App() {
     return (
       <div className="app-shell">
         <header className="top-header">
-          <h1>RSJP業務マニュアルAI</h1>
-          <p>社内利用のため、メール/パスワード認証後に利用できます。</p>
+          <div>
+            <h1>RSJP業務マニュアルAI</h1>
+            <p>社内利用のため、メール/パスワード認証後に利用できます。</p>
+          </div>
         </header>
 
         <section className="left-panel login-panel">
@@ -818,6 +938,7 @@ export default function App() {
 
           <section className="revision-panel">
             <h2>次にやること</h2>
+
             <ol>
               <li>デモユーザーでログインして画面の動きを確認します。</li>
               <li>運用設定でQ&A API URLを確認します。</li>
@@ -886,7 +1007,7 @@ export default function App() {
                 id="question"
                 value={question}
                 onChange={(event) => setQuestion(event.target.value)}
-                placeholder="例）入会面談後の登録作業を、必要書類から完了報告まで順番に教えてください。"
+                placeholder="例）大型バスの発注方法を、見積依頼から請求書処理まで順番に教えてください。"
                 rows={5}
               />
 
@@ -929,7 +1050,9 @@ export default function App() {
 
             <section className="revision-panel">
               <h2>回答修正（Notion DBへ直接追記）</h2>
-              <p>最新回答を編集し、修正履歴をNotion Revision DBに保存します。</p>
+              <p>
+                最新回答を編集し、修正履歴をNotion Revision DBに保存します。
+              </p>
 
               <button
                 type="button"
@@ -978,20 +1101,25 @@ export default function App() {
 
           <main className="timeline">
             {messages.length === 0 && (
-              <p className="meta">まだ質問がありません。</p>
+              <div className="empty-state">
+                <h2>まずは業務を1つ質問してください</h2>
+                <p>
+                  例：大型バスの発注方法を、見積依頼から請求書処理まで順番に教えてください。
+                </p>
+              </div>
             )}
 
             {messages.map((message) => (
               <div className={`bubble ${message.role}`} key={message.id}>
                 <p className="bubble-label">
                   {message.role === "user" ? "質問" : "回答"} /{" "}
-                  {new Date(message.createdAt).toLocaleString("ja-JP")}
+                  {formatDateTime(message.createdAt)}
                 </p>
 
                 {message.role === "user" ? (
-                  <p>{message.rawText}</p>
+                  <p className="question-text">{message.rawText}</p>
                 ) : (
-                  message.payload && renderAssistant(message.payload)
+                  message.payload && renderAssistant(message.id, message.payload)
                 )}
               </div>
             ))}
@@ -1100,7 +1228,7 @@ export default function App() {
           <ul className="revision-list">
             {revisions.slice(0, 10).map((item) => (
               <li key={item.id}>
-                <strong>{new Date(item.revisedAt).toLocaleString("ja-JP")}</strong>
+                <strong>{formatDateTime(item.revisedAt)}</strong>
                 <p>Q: {item.question}</p>
                 <p>修正: {item.revisedAnswer}</p>
               </li>
