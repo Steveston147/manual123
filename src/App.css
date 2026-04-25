@@ -466,6 +466,16 @@ button.primary {
   margin-top: 6px;
 }
 
+.raw-prompt-panel {
+  margin-top: 10px;
+  background: #ffffff;
+}
+
+.raw-prompt-panel .meta {
+  margin-top: 10px;
+  white-space: pre-wrap;
+}
+
 .image-empty-box {
   border: 1px dashed #cbd5e1;
   background: #f8fbff;
@@ -646,7 +656,11 @@ button.primary {
   padding: 16px;
   border: 1px solid #dbeafe;
   border-radius: 18px;
-  background: linear-gradient(135deg, #ffffff, #eff6ff);
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.98), rgba(239, 246, 255, 0.96)),
+    #ffffff;
+  box-shadow: 0 10px 22px rgba(37, 99, 235, 0.06);
+  overflow: visible;
 }
 
 .slide-preview-header {
@@ -666,26 +680,30 @@ button.primary {
 }
 
 .slide-flow-row {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  display: flex;
+  flex-wrap: wrap;
   gap: 10px;
   align-items: stretch;
+  overflow: visible;
 }
 
 .slide-step-wrap {
-  display: grid;
-  grid-template-columns: 1fr auto;
+  display: flex;
+  align-items: stretch;
   gap: 8px;
-  align-items: center;
+  min-width: 110px;
+  flex: 1 1 118px;
 }
 
 .slide-step-card {
-  min-height: 96px;
-  padding: 12px;
+  width: 100%;
+  min-height: 84px;
+  padding: 11px;
   border-radius: 16px;
-  background: #fff;
+  background: #ffffff;
   border: 1px solid #dbeafe;
   box-shadow: 0 8px 18px rgba(37, 99, 235, 0.08);
+  overflow: visible;
 }
 
 .slide-step-number {
@@ -700,19 +718,84 @@ button.primary {
   color: #1d4ed8;
   font-size: 12px;
   font-weight: 900;
+  line-height: 1;
 }
 
-.slide-step-card p {
+.slide-step-card p,
+.slide-step-title {
   margin: 0;
   color: #172033;
-  font-weight: 800;
-  line-height: 1.55;
+  font-size: 14px;
+  font-weight: 900;
+  line-height: 1.45;
+  letter-spacing: -0.02em;
+  white-space: normal;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+  overflow: visible;
 }
 
 .slide-arrow {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   color: #60a5fa;
-  font-size: 20px;
+  font-size: 19px;
   font-weight: 900;
+  flex: 0 0 auto;
+  padding-top: 24px;
+}
+
+.slide-detail-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+  padding: 12px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid #e2e8f0;
+  overflow: visible;
+}
+
+.slide-detail-list .mini-label {
+  margin-bottom: 2px;
+}
+
+.slide-detail-item {
+  display: grid;
+  grid-template-columns: 30px 1fr;
+  gap: 9px;
+  align-items: start;
+  padding: 10px;
+  border-radius: 13px;
+  background: #ffffff;
+  border: 1px solid #dbeafe;
+  overflow: visible;
+}
+
+.slide-detail-number {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 25px;
+  height: 25px;
+  border-radius: 999px;
+  background: #dbeafe;
+  color: #1d4ed8;
+  font-size: 12px;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.slide-detail-text {
+  margin: 0;
+  color: #334155;
+  font-size: 13px;
+  line-height: 1.7;
+  white-space: normal;
+  word-break: normal;
+  overflow-wrap: anywhere;
+  overflow: visible;
 }
 
 .slide-note-box {
@@ -721,12 +804,20 @@ button.primary {
   background: #fefce8;
   border: 1px solid #fde68a;
   padding: 10px 12px;
+  overflow: visible;
 }
 
 .slide-note-box ul {
   margin: 4px 0 0;
   padding-left: 20px;
   line-height: 1.7;
+}
+
+.slide-note-box li {
+  margin-bottom: 4px;
+  white-space: normal;
+  word-break: normal;
+  overflow-wrap: anywhere;
 }
 
 .loading-card {
@@ -899,11 +990,25 @@ button.primary {
     width: fit-content;
   }
 
-  .slide-step-wrap {
+  .slide-flow-row {
+    display: grid;
     grid-template-columns: 1fr;
+  }
+
+  .slide-step-wrap {
+    min-width: 0;
+    flex: none;
+  }
+
+  .slide-step-card {
+    min-height: auto;
   }
 
   .slide-arrow {
     display: none;
+  }
+
+  .slide-detail-item {
+    grid-template-columns: 28px 1fr;
   }
 }
