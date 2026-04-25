@@ -656,8 +656,7 @@ button.primary {
   gap: 10px;
 }
 
-.ops-panel h2,
-.guide-panel h2 {
+.ops-panel h2 {
   margin-top: 0;
 }
 
@@ -684,11 +683,88 @@ button.primary {
 
 .guide-panel {
   line-height: 1.8;
+  text-align: left;
+  max-width: 100%;
+}
+
+.guide-panel h2,
+.guide-panel h3 {
+  text-align: left;
+  color: #111827;
+}
+
+.guide-panel h2 {
+  margin: 0 0 18px;
+  font-size: 23px;
+  line-height: 1.35;
+}
+
+.guide-panel h3 {
+  margin: 28px 0 14px;
+  font-size: 18px;
+  line-height: 1.4;
+  padding-top: 18px;
+  border-top: 1px dashed #cbd5e1;
 }
 
 .guide-panel ol,
 .guide-panel ul {
-  padding-left: 24px;
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 10px;
+}
+
+.guide-panel ol {
+  counter-reset: guide-step;
+}
+
+.guide-panel ol li,
+.guide-panel ul li {
+  position: relative;
+  display: grid;
+  grid-template-columns: 34px 1fr;
+  gap: 10px;
+  align-items: start;
+  min-height: 44px;
+  padding: 11px 13px;
+  border-radius: 14px;
+  background: #f8fbff;
+  border: 1px solid #e2e8f0;
+  color: #172033;
+  line-height: 1.65;
+}
+
+.guide-panel ol li::before {
+  counter-increment: guide-step;
+  content: counter(guide-step);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 999px;
+  background: #dbeafe;
+  color: #1d4ed8;
+  font-size: 12px;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.guide-panel ul li::before {
+  content: "✓";
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 999px;
+  background: #dcfce7;
+  color: #166534;
+  font-size: 13px;
+  font-weight: 900;
+  line-height: 1;
 }
 
 .slide-preview-card {
@@ -1119,5 +1195,11 @@ button.primary {
 
   .slide-detail-item {
     grid-template-columns: 28px 1fr;
+  }
+
+  .guide-panel ol li,
+  .guide-panel ul li {
+    grid-template-columns: 30px 1fr;
+    padding: 10px;
   }
 }
