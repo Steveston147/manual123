@@ -1,7 +1,7 @@
- // FILE: api/generate-image.ts
- // PATH: api/generate-image.ts
- 
- type GenerateImageRequest = {
+// FILE: api/generate-image.ts
+// PATH: api/generate-image.ts
+
+type GenerateImageRequest = {
     imagePrompt?: string;
     prompt?: string;
     model?: string;
@@ -75,25 +75,34 @@
   }
   
   function buildFinalPrompt(imagePrompt: string) {
-    return `以下の内容をもとに、社内業務マニュアル用の1枚図解画像を作成してください。
+    return `Create one clean abstract background image for an internal business manual.
   
-  目的:
-  新人職員や業務に不慣れな職員が、次に何をすればよいか一目で分かるようにする。
+  Purpose:
+  The image will be used only as a visual background. Japanese text, step names, labels, and notes will be added later by the web application using HTML/CSS.
   
-  画像の条件:
-  - 16:9の横長
-  - 日本語ラベル
-  - 白背景
-  - 青系の落ち着いたアクセント
-  - 業務フロー図として見やすい構成
-  - 大きめの文字
-  - 小さすぎる文字は使わない
-  - アイコン、矢印、番号を使う
-  - 社内資料として使える落ち着いた見た目
-  - 写真風ではなく、清潔なビジネス図解
-  - 個人名や機密情報は入れない
+  Strict rules:
+  - Do not include any text.
+  - Do not include Japanese characters.
+  - Do not include English words.
+  - Do not include letters, numbers, captions, labels, signs, logos, watermarks, UI text, document text, or readable writing.
+  - Do not draw fake text, pseudo text, scribbles, or unreadable placeholder letters.
+  - All areas that may contain text should be blank or softly shaded.
   
-  図解内容:
+  Image style:
+  - 16:9 horizontal layout
+  - Clean professional business design
+  - White or very light background
+  - Calm blue and slate accents
+  - Abstract workflow feeling
+  - Simple icons without text: documents, check marks, arrows, calendar, people, folders
+  - Left-to-right flow is preferred
+  - Large clear shapes
+  - Minimal, calm, not busy
+  - Suitable for an internal university office manual
+  - No personal names or confidential details
+  - No photo-realistic people
+  
+  Visual theme based on this content:
   ${imagePrompt}`;
   }
   
@@ -203,3 +212,4 @@
       });
     }
   }
+  
