@@ -166,6 +166,16 @@ function formatDateTime(value?: string) {
   return date.toLocaleString("ja-JP");
 }
 
+function shortenText(value: string, maxLength: number) {
+  const normalized = value.replace(/\s+/g, " ").trim();
+
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+
+  return `${normalized.slice(0, maxLength)}…`;
+}
+
 function buildAskRequest(
   question: string,
   auth: AuthState,
@@ -742,6 +752,51 @@ export default function App() {
     setEditedAnswer("");
   }
 
+  function renderSlidePreview(payload: AnswerPayload) {
+    const slideSteps = payload.steps.slice(0, 4);
+    const slideNotes = payload.checklist.slice(0, 2).map((item) => item.text);
+
+    return (
+      <div className="slide-preview-card">
+        <div className="slide-preview-header">
+          <p className="mini-label">文字崩れ対策版</p>
+          <h5>業務フロー図解</h5>
+          <p>日本語文字は画像ではなく、この画面上で正確に表示します。</p>
+        </div>
+
+        <div className="slide-flow-row">
+          {slideSteps.length > 0 ? (
+            slideSteps.map((step, index) => (
+              <div className="slide-step-wrap" key={`${step}-${index}`}>
+                <div className="slide-step-card">
+                  <span className="slide-step-number">{index + 1}</span>
+                  <p>{shortenText(step, 26)}</p>
+                </div>
+
+                {index < slideSteps.length - 1 && (
+                  <span className="slide-arrow">→</span>
+                )}
+              </div>
+            ))
+          ) : (
+            <p className="meta">手順が生成されると、ここに図解カードを表示します。</p>
+          )}
+        </div>
+
+        {slideNotes.length > 0 && (
+          <div className="slide-note-box">
+            <p className="mini-label">注意点</p>
+            <ul>
+              {slideNotes.map((note, index) => (
+                <li key={`${note}-${index}`}>{shortenText(note, 34)}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
+    );
+  }
+
   function renderAssistant(messageId: string, payload: AnswerPayload) {
     const isGeneratingImage = Boolean(imageLoadingIds[messageId]);
     const imageError = imageErrors[messageId];
@@ -798,8 +853,10 @@ export default function App() {
         <section className="answer-section image-section">
           <div className="section-heading-row">
             <h4>1枚スライド用の図解</h4>
-            <span className="section-badge">画像生成</span>
+            <span className="section-badge">文字はUI表示</span>
           </div>
+
+          {renderSlidePreview(payload)}
 
           <div className="image-prompt-box">
             <p className="mini-label">図解プロンプト</p>
@@ -814,10 +871,10 @@ export default function App() {
               disabled={isGeneratingImage || !payload.imagePrompt.trim()}
             >
               {isGeneratingImage
-                ? "図解画像を生成中..."
+                ? "背景画像を生成中..."
                 : displayImageUrl
-                  ? "図解画像を再生成"
-                  : "図解画像を生成"}
+                  ? "背景画像を再生成"
+                  : "背景画像を生成"}
             </button>
           </div>
 
@@ -836,15 +893,15 @@ export default function App() {
 
               <img
                 src={displayImageUrl}
-                alt="生成された1枚スライド"
+                alt="生成された背景画像"
                 className="generated-image"
               />
             </div>
           ) : (
             <div className="image-empty-box">
-              <p className="image-empty-title">図解画像はまだ生成されていません。</p>
+              <p className="image-empty-title">背景画像はまだ生成されていません。</p>
               <p className="meta">
-                上の「図解画像を生成」を押すと、この欄に1枚の説明画像を表示します。
+                日本語は上の図解カードで表示します。画像生成は背景・雰囲気用です。
               </p>
             </div>
           )}
