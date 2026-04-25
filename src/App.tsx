@@ -9,6 +9,26 @@ type ChecklistItem = {
   done?: boolean;
 };
 
+type SearchDebugPage = {
+  title: string;
+  score: number;
+  url?: string;
+  lastEditedTime?: string;
+  contentPreview: string;
+};
+
+type SearchDebug = {
+  searchTerms: string[];
+  searchQueries: string[];
+  databasePageCount: number;
+  seedPageCount: number;
+  discoveredPageCount: number;
+  selectedPageCount: number;
+  maxScore: number;
+  minimumScore: number;
+  selectedPages: SearchDebugPage[];
+};
+
 type AnswerPayload = {
   answer: string;
   steps: string[];
@@ -18,6 +38,9 @@ type AnswerPayload = {
   references?: string[];
   updatedAt?: string;
   oldPolicyNote?: string;
+  debug?: {
+    search?: SearchDebug;
+  };
 };
 
 type ChatMessage = {
@@ -186,6 +209,19 @@ ${requestBody.question}
     updatedAt: nowIso(),
     oldPolicyNote:
       "この段階ではNotion APIにはまだ接続していません。次のStepでNotion検索を追加します。",
+    debug: {
+      search: {
+        searchTerms: ["ローカル確認"],
+        searchQueries: [requestBody.question],
+        databasePageCount: 0,
+        seedPageCount: 0,
+        discoveredPageCount: 0,
+        selectedPageCount: 0,
+        maxScore: 0,
+        minimumScore: 0,
+        selectedPages: [],
+      },
+    },
   };
 }
 
@@ -235,7 +271,136 @@ function assistantFromRaw(question: string, raw: unknown): AnswerPayload {
     oldPolicyNote:
       anyData.oldPolicyNote ??
       "過去運用との差分は、更新履歴の要約を確認してください。",
+    debug: anyData.debug,
   };
+}
+
+function renderSearchDebug(debug?: SearchDebug) {
+  if (!debug) return null;
+
+  return (
+    <details
+      style={{
+        marginTop: "18px",
+        border: "1px solid #cbd5e1",
+        borderRadius: "12px",
+        padding: "12px",
+        background: "#f8fafc",
+        textAlign: "left",
+      }}
+    >
+      <summary
+        style={{
+          cursor: "pointer",
+          fontWeight: 700,
+          color: "#0f172a",
+        }}
+      >
+        検索デバッグ（開発確認用）
+      </summary>
+
+      <div style={{ marginTop: "12px", display: "grid", gap: "10px" }}>
+        <section>
+          <h4 style={{ margin: "0 0 6px" }}>検索サマリー</h4>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
+              gap: "8px",
+            }}
+          >
+            <p className="meta">DBページ数: {debug.databasePageCount}</p>
+            <p className="meta">候補ページ数: {debug.seedPageCount}</p>
+            <p className="meta">探索ページ数: {debug.discoveredPageCount}</p>
+            <p className="meta">採用ページ数: {debug.selectedPageCount}</p>
+            <p className="meta">最高スコア: {debug.maxScore}</p>
+            <p className="meta">採用基準: {debug.minimumScore}</p>
+          </div>
+        </section>
+
+        <section>
+          <h4 style={{ margin: "0 0 6px" }}>検索語</h4>
+          {debug.searchTerms.length > 0 ? (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
+              {debug.searchTerms.map((term) => (
+                <span
+                  key={term}
+                  style={{
+                    border: "1px solid #bfdbfe",
+                    background: "#eff6ff",
+                    borderRadius: "999px",
+                    padding: "4px 8px",
+                    fontSize: "12px",
+                  }}
+                >
+                  {term}
+                </span>
+              ))}
+            </div>
+          ) : (
+            <p className="meta">検索語なし</p>
+          )}
+        </section>
+
+        <section>
+          <h4 style={{ margin: "0 0 6px" }}>検索クエリ</h4>
+          {debug.searchQueries.length > 0 ? (
+            <ol>
+              {debug.searchQueries.map((query) => (
+                <li key={query}>{query}</li>
+              ))}
+            </ol>
+          ) : (
+            <p className="meta">検索クエリなし</p>
+          )}
+        </section>
+
+        <section>
+          <h4 style={{ margin: "0 0 6px" }}>採用されたNotionページ</h4>
+          {debug.selectedPages.length > 0 ? (
+            <div style={{ display: "grid", gap: "8px" }}>
+              {debug.selectedPages.map((page, index) => (
+                <article
+                  key={`${page.title}-${index}`}
+                  style={{
+                    border: "1px solid #e2e8f0",
+                    borderRadius: "10px",
+                    padding: "10px",
+                    background: "#fff",
+                  }}
+                >
+                  <p style={{ margin: "0 0 4px", fontWeight: 700 }}>
+                    {index + 1}. {page.title}
+                  </p>
+                  <p className="meta">
+                    score: {page.score}
+                    {page.lastEditedTime
+                      ? ` / 更新: ${new Date(page.lastEditedTime).toLocaleString("ja-JP")}`
+                      : ""}
+                  </p>
+                  {page.url && (
+                    <a
+                      href={page.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-link"
+                    >
+                      Notionページを開く
+                    </a>
+                  )}
+                  <p className="meta" style={{ marginTop: "6px" }}>
+                    {page.contentPreview || "本文プレビューなし"}
+                  </p>
+                </article>
+              ))}
+            </div>
+          ) : (
+            <p className="meta">採用ページなし</p>
+          )}
+        </section>
+      </div>
+    </details>
+  );
 }
 
 export default function App() {
@@ -600,6 +765,8 @@ export default function App() {
             </ul>
           </>
         )}
+
+        {renderSearchDebug(payload.debug?.search)}
       </article>
     );
   }
