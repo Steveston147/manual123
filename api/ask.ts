@@ -81,6 +81,11 @@ type ChildPageRef = {
   title: string;
 };
 
+type ChildDatabaseRef = {
+  id: string;
+  title: string;
+};
+
 type NotionContextPage = {
   id: string;
   title: string;
@@ -95,9 +100,16 @@ type NotionContextResult = {
   debug: SearchDebug;
 };
 
-const MAX_CONTEXT_PAGES = 7;
-const MAX_DISCOVERED_PAGES = 60;
-const MAX_PAGE_CONTENT_LENGTH = 3800;
+const MAX_CONTEXT_PAGES = 9;
+const MAX_DISCOVERED_PAGES = 120;
+const MAX_PAGE_CONTENT_LENGTH = 5200;
+const MAX_DATABASE_PAGES = 160;
+const MAX_SEED_PAGES = 90;
+const MAX_BLOCK_CHILD_PAGES = 5;
+const MAX_CHILD_PAGES_PER_PAGE = 30;
+const MAX_CHILD_DATABASE_PAGES = 45;
+const MAX_RECURSION_DEPTH = 4;
+const MAX_NESTED_BLOCK_DEPTH = 3;
 
 function parseBody(body: ApiRequest["body"]): AskRequestBody {
   if (!body) return {};
@@ -163,6 +175,19 @@ function extractBlockText(block: any): string {
 
   if (type === "child_page") {
     return `子ページ: ${value.title ?? ""}`;
+  }
+
+  if (type === "child_database") {
+    return `子データベース: ${value.title ?? ""}`;
+  }
+
+  if (type === "bookmark" || type === "link_preview") {
+    return value.url ?? "";
+  }
+
+  if (type === "pdf" || type === "video") {
+    const caption = extractPlainText(value.caption);
+    return caption || value.file?.url || value.external?.url || "";
   }
 
   if (type === "divider") {
@@ -231,6 +256,15 @@ function buildSearchTerms(question: string): string[] {
     );
 
   const domainTerms = [
+    "RSJP",
+    "RWJP",
+    "Express",
+    "RDSP",
+    "OIC",
+    "BKC",
+    "衣笠",
+    "朱雀",
+    "セミナーハウス",
     "バス",
     "大型バス",
     "貸切バス",
@@ -259,15 +293,43 @@ function buildSearchTerms(question: string): string[] {
     "業務完了報告書",
     "ホテル",
     "宿舎",
+    "宿泊",
     "参加者",
+    "名簿",
     "募集",
     "フォーム",
+    "アンケート",
     "Convera",
     "精算",
     "報告",
+    "契約",
+    "合意書",
+    "agreement",
+    "invoice",
+    "payment",
+    "キャンセル",
+    "返金",
+    "参加費",
     "ガイド",
     "講師",
     "謝金",
+    "講義",
+    "企業訪問",
+    "学校訪問",
+    "小学校",
+    "給食",
+    "アレルギー",
+    "保険",
+    "ビザ",
+    "査証",
+    "空港",
+    "送迎",
+    "BBP",
+    "KOBO",
+    "交流",
+    "修了証",
+    "緊急",
+    "トラブル",
   ];
 
   const expandedTerms: string[] = [];
@@ -340,6 +402,26 @@ function buildSearchTerms(question: string): string[] {
     );
   }
 
+  if (question.includes("宿泊") || question.includes("ホテル") || question.includes("宿舎")) {
+    expandedTerms.push("宿泊", "ホテル", "宿舎", "セミナーハウス", "部屋", "チェックイン", "チェックアウト");
+  }
+
+  if (question.includes("契約") || question.includes("合意書") || question.toLowerCase().includes("agreement")) {
+    expandedTerms.push("契約", "合意書", "agreement", "支払", "キャンセル", "個人情報", "保険");
+  }
+
+  if (question.includes("アレルギー") || question.includes("給食") || question.includes("学校")) {
+    expandedTerms.push("学校訪問", "小学校", "給食", "アレルギー", "参加者", "名簿", "フォーム");
+  }
+
+  if (question.includes("空港") || question.includes("送迎")) {
+    expandedTerms.push("空港", "送迎", "バス", "集合", "到着", "出発");
+  }
+
+  if (question.includes("保険") || question.includes("ビザ") || question.includes("査証")) {
+    expandedTerms.push("保険", "ビザ", "査証", "参加者", "書類", "申請");
+  }
+
   const matchedTerms = domainTerms.filter((term) => question.includes(term));
 
   return Array.from(new Set([...matchedTerms, ...expandedTerms, ...roughTerms])).filter(
@@ -377,7 +459,23 @@ function buildSearchQueries(question: string, terms: string[]): string[] {
     queries.push("支払い", "経理 支払", "請求書", "納品書", "Convera");
   }
 
-  queries.push(...terms.slice(0, 8));
+  if (question.includes("宿泊") || question.includes("ホテル") || question.includes("宿舎")) {
+    queries.push("宿泊", "ホテル", "宿舎", "セミナーハウス", "チェックイン");
+  }
+
+  if (question.includes("契約") || question.includes("合意書") || question.toLowerCase().includes("agreement")) {
+    queries.push("契約", "合意書", "agreement", "キャンセル", "支払条件");
+  }
+
+  if (question.includes("アレルギー") || question.includes("給食") || question.includes("学校")) {
+    queries.push("学校訪問", "小学校", "給食", "アレルギー", "フォーム");
+  }
+
+  if (question.includes("空港") || question.includes("送迎")) {
+    queries.push("空港", "送迎", "集合", "到着", "出発");
+  }
+
+  queries.push(...terms.slice(0, 10));
 
   return Array.from(new Set(queries.map((query) => query.trim()).filter(Boolean))).slice(
     0,
@@ -485,7 +583,7 @@ function scorePage(question: string, page: NotionContextPage): number {
 function stripListPrefix(value: string): string {
   return value
     .replace(
-      /^\s*(\d+[\.\)]|[０-９]+[．.)）]|[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳]|[-・●■])\s*/g,
+      /^\s*(\d+[\.)]|[０-９]+[．.)）]|[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳]|[-・●■])\s*/g,
       ""
     )
     .trim();
@@ -554,7 +652,7 @@ function fallbackPayload(message: string, debug?: SearchDebug): AnswerPayload {
       { text: "Vercelの最新デプロイが成功している" },
     ],
     imagePrompt:
-      "16:9横長スライド。日本語ラベル。Notion API接続エラー時の確認手順を、Vercel、Environment Variables、Notion共有設定、再デプロイの流れで示すシンプルな業務フロー図。白背景、青系アクセント、大きな文字、矢印とアイコンを使う。",
+      "16:9横長。文字なし。白背景と淡い青系アクセント。Vercel、環境変数、Notion共有設定、再デプロイを連想させる抽象的な業務フロー背景。文字、数字、ラベル、ロゴは入れない。",
     imageUrl: "",
     references: ["Notion / OpenAI API接続確認"],
     updatedAt: new Date().toISOString(),
@@ -630,7 +728,7 @@ function normalizePayload(
     imagePrompt:
       typeof data.imagePrompt === "string" && data.imagePrompt.trim()
         ? data.imagePrompt
-        : "16:9横長スライド。日本語ラベル。業務手順を初心者向けに説明するシンプルな1枚スライド。白背景、青系アクセント、大きな文字、矢印とアイコンを使う。",
+        : "16:9横長。文字なし。白背景と淡い青系アクセント。業務手順を連想させる抽象的な背景。矢印、書類、チェックマーク、人物アイコンのみ。文字、数字、ラベル、ロゴは入れない。",
     imageUrl: typeof data.imageUrl === "string" ? data.imageUrl : "",
     references: normalizeReferences(data.references, references),
     updatedAt:
@@ -709,7 +807,7 @@ async function getBlockChildren(blockId: string): Promise<any[]> {
   const results: any[] = [];
   let cursor: string | null = null;
 
-  for (let i = 0; i < 3; i += 1) {
+  for (let i = 0; i < MAX_BLOCK_CHILD_PAGES; i += 1) {
     const query = cursor ? `?page_size=100&start_cursor=${cursor}` : "?page_size=100";
     const response = await notionRequest(`/v1/blocks/${blockId}/children${query}`, {
       method: "GET",
@@ -739,12 +837,60 @@ async function getBlockChildren(blockId: string): Promise<any[]> {
   return results;
 }
 
+async function collectNestedBlockContent(
+  blockId: string,
+  depth: number,
+  lines: string[],
+  childPages: ChildPageRef[],
+  childDatabases: ChildDatabaseRef[]
+): Promise<void> {
+  if (depth > MAX_NESTED_BLOCK_DEPTH) return;
+  if (lines.join("\n").length >= MAX_PAGE_CONTENT_LENGTH) return;
+
+  const children = await getBlockChildren(blockId);
+
+  for (const child of children) {
+    const type = child?.type;
+
+    if (type === "child_page") {
+      const childTitle = child.child_page?.title ?? "子ページ";
+      childPages.push({
+        id: child.id,
+        title: childTitle,
+      });
+      lines.push(`子ページ: ${childTitle}`);
+    } else if (type === "child_database") {
+      const databaseTitle = child.child_database?.title ?? "子データベース";
+      childDatabases.push({
+        id: child.id,
+        title: databaseTitle,
+      });
+      lines.push(`子データベース: ${databaseTitle}`);
+    } else {
+      const childText = extractBlockText(child);
+
+      if (childText) {
+        lines.push(`${"  ".repeat(depth)}- ${childText}`);
+      }
+    }
+
+    if (child?.has_children && lines.join("\n").length < MAX_PAGE_CONTENT_LENGTH) {
+      await collectNestedBlockContent(child.id, depth + 1, lines, childPages, childDatabases);
+    }
+
+    if (lines.join("\n").length >= MAX_PAGE_CONTENT_LENGTH) {
+      break;
+    }
+  }
+}
+
 async function getPageContentAndChildPages(
   pageId: string
-): Promise<{ content: string; childPages: ChildPageRef[] }> {
+): Promise<{ content: string; childPages: ChildPageRef[]; childDatabases: ChildDatabaseRef[] }> {
   const blocks = await getBlockChildren(pageId);
   const lines: string[] = [];
   const childPages: ChildPageRef[] = [];
+  const childDatabases: ChildDatabaseRef[] = [];
 
   for (const block of blocks) {
     const type = block?.type;
@@ -756,39 +902,23 @@ async function getPageContentAndChildPages(
         title: childTitle,
       });
       lines.push(`子ページ: ${childTitle}`);
-      continue;
-    }
+    } else if (type === "child_database") {
+      const databaseTitle = block.child_database?.title ?? "子データベース";
+      childDatabases.push({
+        id: block.id,
+        title: databaseTitle,
+      });
+      lines.push(`子データベース: ${databaseTitle}`);
+    } else {
+      const text = extractBlockText(block);
 
-    const text = extractBlockText(block);
-
-    if (text) {
-      lines.push(text);
+      if (text) {
+        lines.push(text);
+      }
     }
 
     if (block?.has_children && lines.join("\n").length < MAX_PAGE_CONTENT_LENGTH) {
-      const children = await getBlockChildren(block.id);
-
-      for (const child of children) {
-        if (child?.type === "child_page") {
-          const childTitle = child.child_page?.title ?? "子ページ";
-          childPages.push({
-            id: child.id,
-            title: childTitle,
-          });
-          lines.push(`子ページ: ${childTitle}`);
-          continue;
-        }
-
-        const childText = extractBlockText(child);
-
-        if (childText) {
-          lines.push(`- ${childText}`);
-        }
-
-        if (lines.join("\n").length >= MAX_PAGE_CONTENT_LENGTH) {
-          break;
-        }
-      }
+      await collectNestedBlockContent(block.id, 1, lines, childPages, childDatabases);
     }
 
     if (lines.join("\n").length >= MAX_PAGE_CONTENT_LENGTH) {
@@ -799,7 +929,53 @@ async function getPageContentAndChildPages(
   return {
     content: lines.join("\n").slice(0, MAX_PAGE_CONTENT_LENGTH),
     childPages,
+    childDatabases,
   };
+}
+
+async function getDatabasePagesById(databaseId: string, maxPages = MAX_DATABASE_PAGES): Promise<NotionPage[]> {
+  const pages: NotionPage[] = [];
+  let cursor: string | null = null;
+
+  while (pages.length < maxPages) {
+    const response = await notionRequest(`/v1/databases/${databaseId}/query`, {
+      method: "POST",
+      body: JSON.stringify({
+        page_size: Math.min(100, maxPages - pages.length),
+        ...(cursor ? { start_cursor: cursor } : {}),
+      }),
+    });
+
+    const rawText = await response.text();
+
+    if (!response.ok) {
+      throw new Error(`Notion database query failed: HTTP ${response.status} ${rawText.slice(0, 800)}`);
+    }
+
+    const data = JSON.parse(rawText) as {
+      results?: NotionPage[];
+      has_more?: boolean;
+      next_cursor?: string | null;
+    };
+
+    pages.push(...(data.results ?? []));
+
+    if (!data.has_more || !data.next_cursor) {
+      break;
+    }
+
+    cursor = data.next_cursor;
+  }
+
+  return pages;
+}
+
+async function tryGetDatabasePagesById(databaseId: string, maxPages = MAX_CHILD_DATABASE_PAGES): Promise<NotionPage[]> {
+  try {
+    return await getDatabasePagesById(databaseId, maxPages);
+  } catch {
+    return [];
+  }
 }
 
 async function getDatabasePages(): Promise<NotionPage[]> {
@@ -809,24 +985,7 @@ async function getDatabasePages(): Promise<NotionPage[]> {
     throw new Error("NOTION_DATABASE_ID is not set.");
   }
 
-  const response = await notionRequest(`/v1/databases/${databaseId}/query`, {
-    method: "POST",
-    body: JSON.stringify({
-      page_size: 40,
-    }),
-  });
-
-  const rawText = await response.text();
-
-  if (!response.ok) {
-    throw new Error(`Notion database query failed: HTTP ${response.status} ${rawText.slice(0, 800)}`);
-  }
-
-  const data = JSON.parse(rawText) as {
-    results?: NotionPage[];
-  };
-
-  return data.results ?? [];
+  return getDatabasePagesById(databaseId, MAX_DATABASE_PAGES);
 }
 
 async function searchNotionPages(query: string): Promise<NotionPage[]> {
@@ -846,7 +1005,7 @@ async function searchNotionPages(query: string): Promise<NotionPage[]> {
         direction: "descending",
         timestamp: "last_edited_time",
       },
-      page_size: 8,
+      page_size: 12,
     }),
   });
 
@@ -878,7 +1037,7 @@ async function collectPageCandidate(
   const rawTitle = extractPageTitle(page);
   const titlePath = parentPath ? `${parentPath} > ${rawTitle}` : rawTitle;
 
-  const { content, childPages } = await getPageContentAndChildPages(page.id);
+  const { content, childPages, childDatabases } = await getPageContentAndChildPages(page.id);
 
   output.push({
     id: page.id,
@@ -889,9 +1048,9 @@ async function collectPageCandidate(
     score: 0,
   });
 
-  if (depth >= 3) return;
+  if (depth >= MAX_RECURSION_DEPTH) return;
 
-  for (const childPage of childPages.slice(0, 20)) {
+  for (const childPage of childPages.slice(0, MAX_CHILD_PAGES_PER_PAGE)) {
     if (output.length >= MAX_DISCOVERED_PAGES) break;
     if (seen.has(childPage.id)) continue;
 
@@ -911,6 +1070,26 @@ async function collectPageCandidate(
     }
 
     await collectPageCandidate(child, depth + 1, titlePath, seen, output);
+  }
+
+  for (const childDatabase of childDatabases.slice(0, 8)) {
+    if (output.length >= MAX_DISCOVERED_PAGES) break;
+
+    const databasePages = await tryGetDatabasePagesById(
+      childDatabase.id,
+      MAX_CHILD_DATABASE_PAGES
+    );
+
+    for (const databasePage of databasePages) {
+      if (output.length >= MAX_DISCOVERED_PAGES) break;
+      await collectPageCandidate(
+        databasePage,
+        depth + 1,
+        `${titlePath} > ${childDatabase.title}`,
+        seen,
+        output
+      );
+    }
   }
 }
 
@@ -937,7 +1116,7 @@ async function getNotionContext(question: string): Promise<NotionContextResult> 
   const seen = new Set<string>();
   const discoveredPages: NotionContextPage[] = [];
 
-  for (const page of Array.from(seedPageMap.values()).slice(0, 48)) {
+  for (const page of Array.from(seedPageMap.values()).slice(0, MAX_SEED_PAGES)) {
     if (discoveredPages.length >= MAX_DISCOVERED_PAGES) break;
     await collectPageCandidate(page, 0, "", seen, discoveredPages);
   }
@@ -1044,9 +1223,10 @@ ${contextText}
 - 必要に応じて「最新の学内ルール・担当部署の指示を確認してください」と入れる
 - referencesには実際に使ったNotionページタイトルのみを入れる
 - imageUrlは空文字にする
-- imagePromptには、1枚スライド画像を作るための具体的な日本語プロンプトを書く
+- imagePromptには、文字なしの背景画像を作るための具体的な日本語プロンプトを書く
 - stepsの各要素には、番号、丸数字、箇条書き記号を入れない
 - checklistの各textには、番号、丸数字、箇条書き記号を入れない
+- imagePromptでは「文字、数字、ラベル、ロゴを入れない」と明記する
 - answer内では「Notionで確認できたこと」「Notionで確認できなかったこと」「次に確認すること」を自然に分ける
 `;
 
