@@ -82,12 +82,6 @@ const STORAGE_KEYS = {
   settings: "rsjp_manual_settings_v2",
 };
 
-const QUESTION_TEMPLATES = [
-  "新規入会者の初回対応フローを、準備から完了まで分解して教えてください。",
-  "トラブル発生時の初動対応を、判断基準付きでステップ化してください。",
-  "この業務のチェックリストを、初心者向けの言葉で作成してください。",
-];
-
 const DEFAULT_SETTINGS = {
   qaWebhookUrl: "/api/ask",
   authWebhookUrl: "",
@@ -164,16 +158,6 @@ function formatDateTime(value?: string) {
   }
 
   return date.toLocaleString("ja-JP");
-}
-
-function shortenText(value: string, maxLength: number) {
-  const normalized = value.replace(/\s+/g, " ").trim();
-
-  if (normalized.length <= maxLength) {
-    return normalized;
-  }
-
-  return `${normalized.slice(0, maxLength)}…`;
 }
 
 function stripListPrefixForUi(value: string) {
@@ -383,7 +367,7 @@ function renderSearchDebug(debug?: SearchDebug) {
   if (!debug) return null;
 
   return (
-    <details className="debug-panel">
+    <details className="debug-panel no-print">
       <summary>検索デバッグ（開発確認用）</summary>
 
       <div className="debug-content">
@@ -540,6 +524,10 @@ export default function App() {
     setEmail("demo@rsjp.local");
     setPassword("");
     setAuth({ email: "demo@rsjp.local", token: "local-demo-token" });
+  }
+
+  function printAnswer() {
+    window.print();
   }
 
   async function login(e: FormEvent) {
@@ -918,7 +906,13 @@ export default function App() {
     }
 
     return (
-      <article className="answer-card">
+      <article className="answer-card printable-answer">
+        <div className="answer-toolbar no-print">
+          <button type="button" onClick={printAnswer}>
+            この回答を印刷
+          </button>
+        </div>
+
         <section className="answer-section answer-section-main">
           <div className="section-heading-row">
             <h3>回答（初心者向け）</h3>
@@ -973,19 +967,19 @@ export default function App() {
 
           {renderSlidePreview(payload)}
 
-          <div className="image-prompt-box">
-            <p className="mini-label">背景画像プロンプト（実際に画像生成へ送信）</p>
+          <details className="image-prompt-box no-print">
+            <summary>背景画像プロンプト（画像生成に使う内容）</summary>
             <p>{backgroundPrompt}</p>
-          </div>
+          </details>
 
           {payload.imagePrompt && (
-            <details className="debug-panel raw-prompt-panel">
+            <details className="debug-panel raw-prompt-panel no-print">
               <summary>AIが返した元の図解プロンプト（参考・画像生成には使いません）</summary>
               <p className="meta">{payload.imagePrompt}</p>
             </details>
           )}
 
-          <div className="generated-image-box">
+          <div className="generated-image-box no-print">
             <button
               type="button"
               className="primary"
@@ -1001,13 +995,13 @@ export default function App() {
           </div>
 
           {isGeneratingImage && (
-            <div className="mini-loading-row">
+            <div className="mini-loading-row no-print">
               <span className="mini-spinner" />
               <span>背景画像を生成しています。少し時間がかかります。</span>
             </div>
           )}
 
-          {imageError && <p className="error">{imageError}</p>}
+          {imageError && <p className="error no-print">{imageError}</p>}
 
           {displayImageUrl ? (
             <div className="generated-image-box">
@@ -1015,7 +1009,7 @@ export default function App() {
                 href={displayImageUrl}
                 target="_blank"
                 rel="noreferrer"
-                className="inline-link"
+                className="inline-link no-print"
               >
                 画像を開く
               </a>
@@ -1027,7 +1021,7 @@ export default function App() {
               />
             </div>
           ) : (
-            <div className="image-empty-box">
+            <div className="image-empty-box no-print">
               <p className="image-empty-title">背景画像はまだ生成されていません。</p>
               <p className="meta">
                 日本語は上の図解カードで表示します。画像生成は背景・雰囲気用です。
@@ -1141,7 +1135,7 @@ export default function App() {
 
   return (
     <div className="app-shell">
-      <header className="top-header app-hero">
+      <header className="top-header app-hero no-print">
         <div className="hero-copy">
           <p className="hero-kicker">RSJP Manual Assistant</p>
           <h1>RSJP業務マニュアルAI</h1>
@@ -1163,7 +1157,7 @@ export default function App() {
         </div>
       </header>
 
-      <nav className="tab-row">
+      <nav className="tab-row no-print">
         <button
           className={activeTab === "chat" ? "active" : ""}
           onClick={() => setActiveTab("chat")}
@@ -1188,7 +1182,7 @@ export default function App() {
 
       {activeTab === "chat" && (
         <section className="chat-layout">
-          <aside className="left-panel">
+          <aside className="left-panel no-print">
             <form onSubmit={submitQuestion} className="question-form">
               <label htmlFor="question">質問</label>
 
@@ -1197,20 +1191,8 @@ export default function App() {
                 value={question}
                 onChange={(event) => setQuestion(event.target.value)}
                 placeholder="例）大型バスの発注方法を、見積依頼から請求書処理まで順番に教えてください。"
-                rows={5}
+                rows={6}
               />
-
-              <div className="template-row">
-                {QUESTION_TEMPLATES.map((template) => (
-                  <button
-                    type="button"
-                    key={template}
-                    onClick={() => setQuestion(template)}
-                  >
-                    テンプレ挿入
-                  </button>
-                ))}
-              </div>
 
               <button
                 type="submit"
@@ -1295,7 +1277,7 @@ export default function App() {
             </section>
           </aside>
 
-          <main className="timeline">
+          <main className="timeline print-area">
             {messages.length === 0 && (
               <div className="empty-state">
                 <h2>まずは業務を1つ質問してください</h2>
@@ -1444,9 +1426,7 @@ export default function App() {
             <li>「質問画面」で業務内容を1つだけ入力します。</li>
             <li>回答に表示された「手順」を上から順番に実施します。</li>
             <li>作業後に「チェックリスト」で抜け漏れを確認します。</li>
-            <li>
-              必要に応じて回答修正を保存し、Notion Revision DBへ反映します。
-            </li>
+            <li>必要に応じて回答修正を保存し、Notion Revision DBへ反映します。</li>
           </ol>
 
           <h3>この実装で固定した方針</h3>
@@ -1455,6 +1435,7 @@ export default function App() {
             <li>NotionはAPI連携で取得（スクレイピング前提にしない）。</li>
             <li>画像生成AIには文字を描かせず、背景画像だけを生成する。</li>
             <li>正確な日本語ラベル・手順・注意点はHTML/CSSで表示する。</li>
+            <li>印刷時は操作ボタンや開発用情報を非表示にし、回答本文を中心に出力する。</li>
             <li>修正回答はNotion DBへ直接追記。</li>
             <li>社内利用の認証方式はメール/パスワード。</li>
           </ul>
