@@ -33,7 +33,7 @@ button:disabled {
 }
 
 .app-shell {
-  width: min(1200px, 100%);
+  width: min(1360px, 100%);
   margin: 0 auto;
   padding: 18px;
 }
@@ -45,7 +45,7 @@ button:disabled {
   align-items: flex-start;
   color: #172033;
   border-radius: 22px;
-  padding: 24px;
+  padding: 22px 24px;
   margin-bottom: 14px;
   background:
     linear-gradient(135deg, rgba(239, 246, 255, 0.98), rgba(244, 243, 255, 0.96)),
@@ -74,27 +74,49 @@ button:disabled {
 .hero-copy {
   position: relative;
   z-index: 1;
-  max-width: 760px;
+  max-width: 860px;
+}
+
+.brand-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.brand-logo {
+  width: 58px;
+  height: 58px;
+  flex: 0 0 auto;
+  object-fit: contain;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.82);
+  padding: 5px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.06);
+}
+
+.brand-copy {
+  min-width: 0;
 }
 
 .hero-kicker {
   display: inline-flex;
   width: fit-content;
-  margin: 0 0 10px;
-  padding: 5px 10px;
+  margin: 0 0 8px;
+  padding: 4px 9px;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.78);
   border: 1px solid rgba(147, 197, 253, 0.42);
   color: #2563eb;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 800;
   letter-spacing: 0.04em;
 }
 
 .top-header h1 {
-  margin: 0 0 8px;
+  margin: 0 0 6px;
   color: #111827;
-  font-size: 28px;
+  font-size: 27px;
   line-height: 1.2;
   letter-spacing: -0.03em;
 }
@@ -171,7 +193,7 @@ button:disabled {
 
 .chat-layout {
   display: grid;
-  grid-template-columns: 360px 1fr;
+  grid-template-columns: 360px minmax(0, 1fr);
   gap: 12px;
   align-items: start;
 }
@@ -345,6 +367,22 @@ button.primary {
   text-align: left;
 }
 
+.answer-toolbar {
+  display: flex;
+  justify-content: flex-start;
+  margin-bottom: 10px;
+}
+
+.answer-toolbar button {
+  border: 1px solid #cbd5e1;
+  background: #ffffff;
+  color: #1e293b;
+  border-radius: 10px;
+  padding: 7px 11px;
+  font-size: 13px;
+  font-weight: 800;
+}
+
 .answer-card h3,
 .answer-card h4 {
   margin: 0;
@@ -458,12 +496,14 @@ button.primary {
   line-height: 1.7;
 }
 
-.image-prompt-box p {
-  margin: 0;
+.image-prompt-box summary {
+  cursor: pointer;
+  font-weight: 900;
+  color: #1d4ed8;
 }
 
-.image-prompt-box p + p {
-  margin-top: 6px;
+.image-prompt-box p {
+  margin: 10px 0 0;
 }
 
 .raw-prompt-panel {
@@ -945,6 +985,62 @@ button.primary {
   }
 }
 
+@media print {
+  body {
+    background: #ffffff !important;
+  }
+
+  .no-print {
+    display: none !important;
+  }
+
+  .app-shell,
+  .chat-layout,
+  .timeline,
+  .print-area {
+    display: block !important;
+    width: 100% !important;
+    max-width: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    box-shadow: none !important;
+    border: none !important;
+    background: #ffffff !important;
+    overflow: visible !important;
+    max-height: none !important;
+  }
+
+  .bubble.user {
+    page-break-after: avoid;
+  }
+
+  .bubble,
+  .answer-section,
+  .slide-preview-card,
+  .slide-detail-item,
+  .slide-note-box {
+    box-shadow: none !important;
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  .bubble {
+    border: none !important;
+    padding: 0 !important;
+    margin: 0 0 12px !important;
+  }
+
+  .answer-section {
+    margin-top: 10px !important;
+    padding: 10px !important;
+  }
+
+  .generated-image {
+    max-height: 180px;
+    object-fit: contain;
+  }
+}
+
 @media (max-width: 960px) {
   .chat-layout {
     grid-template-columns: 1fr;
@@ -967,10 +1063,23 @@ button.primary {
   .top-header {
     display: block;
     border-radius: 18px;
+    padding: 18px;
+  }
+
+  .brand-row {
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  .brand-logo {
+    width: 46px;
+    height: 46px;
+    border-radius: 10px;
+    padding: 4px;
   }
 
   .top-header h1 {
-    font-size: 24px;
+    font-size: 23px;
   }
 
   .hero-actions {
