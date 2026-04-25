@@ -24,6 +24,26 @@ type ChecklistItem = {
   text: string;
 };
 
+type SearchDebugPage = {
+  title: string;
+  score: number;
+  url?: string;
+  lastEditedTime?: string;
+  contentPreview: string;
+};
+
+type SearchDebug = {
+  searchTerms: string[];
+  searchQueries: string[];
+  databasePageCount: number;
+  seedPageCount: number;
+  discoveredPageCount: number;
+  selectedPageCount: number;
+  maxScore: number;
+  minimumScore: number;
+  selectedPages: SearchDebugPage[];
+};
+
 type AnswerPayload = {
   answer: string;
   steps: string[];
@@ -33,6 +53,9 @@ type AnswerPayload = {
   references: string[];
   updatedAt: string;
   oldPolicyNote: string;
+  debug?: {
+    search: SearchDebug;
+  };
 };
 
 type ApiRequest = {
@@ -67,9 +90,14 @@ type NotionContextPage = {
   score: number;
 };
 
+type NotionContextResult = {
+  pages: NotionContextPage[];
+  debug: SearchDebug;
+};
+
 const MAX_CONTEXT_PAGES = 7;
-const MAX_DISCOVERED_PAGES = 55;
-const MAX_PAGE_CONTENT_LENGTH = 3500;
+const MAX_DISCOVERED_PAGES = 60;
+const MAX_PAGE_CONTENT_LENGTH = 3800;
 
 function parseBody(body: ApiRequest["body"]): AskRequestBody {
   if (!body) return {};
@@ -187,7 +215,20 @@ function buildSearchTerms(question: string): string[] {
   const roughTerms = cleaned
     .split(" ")
     .map((term) => term.trim())
-    .filter((term) => term.length >= 2);
+    .filter((term) => term.length >= 2)
+    .filter(
+      (term) =>
+        ![
+          "初心者",
+          "向け",
+          "説明",
+          "してください",
+          "教えて",
+          "方法",
+          "流れ",
+          "手順",
+        ].includes(term)
+    );
 
   const domainTerms = [
     "バス",
@@ -201,13 +242,18 @@ function buildSearchTerms(question: string): string[] {
     "申請",
     "購買",
     "COUPA",
+    "Coupa",
     "スマートDB",
     "経理",
     "支払",
     "支払い",
     "請求",
+    "請求書",
+    "インボイス",
     "見積",
     "見積書",
+    "見積もり",
+    "見積もり依頼",
     "発注書",
     "納品書",
     "業務完了報告書",
@@ -236,12 +282,16 @@ function buildSearchTerms(question: string): string[] {
       "業者発注",
       "発注",
       "見積",
+      "見積書",
+      "見積もり依頼",
       "発注書",
       "納品書",
       "請求書",
       "経理",
       "支払",
-      "COUPA"
+      "COUPA",
+      "Coupa",
+      "フォローオン"
     );
   }
 
@@ -251,22 +301,87 @@ function buildSearchTerms(question: string): string[] {
       "発注書",
       "見積",
       "見積書",
+      "見積もり",
+      "見積もり依頼",
       "納品書",
       "請求書",
       "経理",
       "支払",
-      "COUPA"
+      "COUPA",
+      "Coupa",
+      "フォローオン"
     );
   }
 
   if (question.includes("支払") || question.includes("支払い") || question.includes("請求")) {
-    expandedTerms.push("経理", "支払", "請求", "請求書", "インボイス", "Convera");
+    expandedTerms.push(
+      "経理",
+      "支払",
+      "支払い",
+      "請求",
+      "請求書",
+      "インボイス",
+      "Convera",
+      "納品書",
+      "業務完了報告書"
+    );
+  }
+
+  if (question.includes("見積")) {
+    expandedTerms.push(
+      "見積",
+      "見積書",
+      "見積もり",
+      "見積もり依頼",
+      "業者発注",
+      "発注",
+      "COUPA",
+      "Coupa"
+    );
   }
 
   const matchedTerms = domainTerms.filter((term) => question.includes(term));
 
   return Array.from(new Set([...matchedTerms, ...expandedTerms, ...roughTerms])).filter(
     (term) => term.length >= 2
+  );
+}
+
+function buildSearchQueries(question: string, terms: string[]): string[] {
+  const queries = [question];
+
+  if (question.includes("バス")) {
+    queries.push(
+      "大型バス 発注",
+      "バス 発注",
+      "貸切バス",
+      "観光バス",
+      "ヤサカ観光",
+      "業者発注 バス",
+      "Coupa 見積 バス"
+    );
+  }
+
+  if (question.includes("発注")) {
+    queries.push(
+      "業者発注",
+      "発注書",
+      "見積もり依頼",
+      "Coupaフォローオン",
+      "Coupa 見積",
+      "納品書 請求書"
+    );
+  }
+
+  if (question.includes("支払") || question.includes("支払い") || question.includes("請求")) {
+    queries.push("支払い", "経理 支払", "請求書", "納品書", "Convera");
+  }
+
+  queries.push(...terms.slice(0, 8));
+
+  return Array.from(new Set(queries.map((query) => query.trim()).filter(Boolean))).slice(
+    0,
+    12
   );
 }
 
@@ -278,47 +393,148 @@ function scorePage(question: string, page: NotionContextPage): number {
 
   let score = 0;
 
-  if (title.includes(q)) score += 40;
-  if (content.includes(q)) score += 18;
+  if (title.includes(q)) score += 45;
+  if (content.includes(q)) score += 20;
 
   for (const term of terms) {
     const t = normalizeTextForSearch(term);
 
     if (!t) continue;
 
-    if (title.includes(t)) score += 18;
+    if (title.includes(t)) score += 20;
     if (content.includes(t)) score += 5;
   }
 
-  const titleBoostTerms = ["業者発注", "発注", "経理", "支払", "バス", "大型バス", "COUPA", "見積"];
+  const titleBoostTerms = [
+    "業者発注",
+    "発注",
+    "発注書",
+    "経理",
+    "支払",
+    "バス",
+    "大型バス",
+    "貸切バス",
+    "観光バス",
+    "ヤサカ",
+    "COUPA",
+    "Coupa",
+    "見積",
+    "見積書",
+    "見積もり依頼",
+    "納品書",
+    "請求書",
+  ];
 
   for (const term of titleBoostTerms) {
     const t = normalizeTextForSearch(term);
     if (question.includes(term) && title.includes(t)) {
-      score += 18;
+      score += 22;
     }
+  }
+
+  if (question.includes("バス") && title.includes("経理")) {
+    score += 10;
+  }
+
+  if (question.includes("バス") && content.includes("バス")) {
+    score += 14;
+  }
+
+  if (question.includes("バス") && content.includes("見積")) {
+    score += 10;
+  }
+
+  if (question.includes("バス") && content.includes("発注")) {
+    score += 10;
+  }
+
+  if (question.includes("発注") && content.includes("coupa")) {
+    score += 10;
   }
 
   const genericTitles = ["はじめに", "緊急連絡先", "ホーム", "目次", "使ってみる"];
 
-  if (genericTitles.some((genericTitle) => title === normalizeTextForSearch(genericTitle))) {
-    score -= 12;
+  const finalTitleSegment = title
+    .split(">")
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .pop();
+
+  if (
+    finalTitleSegment &&
+    genericTitles.some((genericTitle) => finalTitleSegment === normalizeTextForSearch(genericTitle))
+  ) {
+    score -= 16;
+  }
+
+  if (!terms.some((term) => title.includes(normalizeTextForSearch(term)))) {
+    score -= 2;
+  }
+
+  if (!terms.some((term) => content.includes(normalizeTextForSearch(term)))) {
+    score -= 2;
   }
 
   if (page.lastEditedTime) {
     score += 0.5;
   }
 
-  return score;
+  return Math.round(score * 10) / 10;
 }
 
 function stripListPrefix(value: string): string {
   return value
-    .replace(/^\s*(\d+[\.\)]|[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳]|[-・●■])\s*/g, "")
+    .replace(
+      /^\s*(\d+[\.\)]|[０-９]+[．.)）]|[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳]|[-・●■])\s*/g,
+      ""
+    )
     .trim();
 }
 
-function fallbackPayload(message: string): AnswerPayload {
+function createEmptyDebug(): SearchDebug {
+  return {
+    searchTerms: [],
+    searchQueries: [],
+    databasePageCount: 0,
+    seedPageCount: 0,
+    discoveredPageCount: 0,
+    selectedPageCount: 0,
+    maxScore: 0,
+    minimumScore: 0,
+    selectedPages: [],
+  };
+}
+
+function createSearchDebug(
+  searchTerms: string[],
+  searchQueries: string[],
+  databasePageCount: number,
+  seedPageCount: number,
+  discoveredPages: NotionContextPage[],
+  selectedPages: NotionContextPage[],
+  maxScore: number,
+  minimumScore: number
+): SearchDebug {
+  return {
+    searchTerms,
+    searchQueries,
+    databasePageCount,
+    seedPageCount,
+    discoveredPageCount: discoveredPages.length,
+    selectedPageCount: selectedPages.length,
+    maxScore,
+    minimumScore,
+    selectedPages: selectedPages.map((page) => ({
+      title: page.title,
+      score: page.score,
+      url: page.url,
+      lastEditedTime: page.lastEditedTime,
+      contentPreview: page.content.replace(/\s+/g, " ").slice(0, 220),
+    })),
+  };
+}
+
+function fallbackPayload(message: string, debug?: SearchDebug): AnswerPayload {
   return {
     answer: message,
     steps: [
@@ -344,13 +560,44 @@ function fallbackPayload(message: string): AnswerPayload {
     updatedAt: new Date().toISOString(),
     oldPolicyNote:
       "Notion APIまたはOpenAI APIの接続確認中のため、過去運用との差分確認は未実施です。",
+    debug: {
+      search: debug ?? createEmptyDebug(),
+    },
   };
+}
+
+function normalizeReferences(dataReferences: unknown, fallbackReferences: string[]): string[] {
+  if (!Array.isArray(dataReferences)) {
+    return fallbackReferences.length > 0 ? fallbackReferences : ["Notion検索結果"];
+  }
+
+  const validReferences = dataReferences
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+  if (validReferences.length === 0) {
+    return fallbackReferences.length > 0 ? fallbackReferences : ["Notion検索結果"];
+  }
+
+  const matchedReferences = validReferences.filter((reference) =>
+    fallbackReferences.some(
+      (source) => source.includes(reference) || reference.includes(source)
+    )
+  );
+
+  if (matchedReferences.length > 0) {
+    return matchedReferences;
+  }
+
+  return fallbackReferences.length > 0 ? fallbackReferences : validReferences;
 }
 
 function normalizePayload(
   question: string,
   data: Partial<AnswerPayload>,
-  references: string[]
+  references: string[],
+  debug: SearchDebug
 ): AnswerPayload {
   const now = new Date().toISOString();
 
@@ -385,12 +632,7 @@ function normalizePayload(
         ? data.imagePrompt
         : "16:9横長スライド。日本語ラベル。業務手順を初心者向けに説明するシンプルな1枚スライド。白背景、青系アクセント、大きな文字、矢印とアイコンを使う。",
     imageUrl: typeof data.imageUrl === "string" ? data.imageUrl : "",
-    references:
-      Array.isArray(data.references) && data.references.length > 0
-        ? data.references
-        : references.length > 0
-          ? references
-          : ["Notion検索結果"],
+    references: normalizeReferences(data.references, references),
     updatedAt:
       typeof data.updatedAt === "string" && data.updatedAt.trim()
         ? data.updatedAt
@@ -399,6 +641,9 @@ function normalizePayload(
       typeof data.oldPolicyNote === "string" && data.oldPolicyNote.trim()
         ? data.oldPolicyNote
         : "Notionの関連ページを参照しています。過去運用との差分は、Notion上の更新日と内容を確認してください。",
+    debug: {
+      search: debug,
+    },
   };
 }
 
@@ -567,7 +812,7 @@ async function getDatabasePages(): Promise<NotionPage[]> {
   const response = await notionRequest(`/v1/databases/${databaseId}/query`, {
     method: "POST",
     body: JSON.stringify({
-      page_size: 35,
+      page_size: 40,
     }),
   });
 
@@ -646,7 +891,7 @@ async function collectPageCandidate(
 
   if (depth >= 3) return;
 
-  for (const childPage of childPages.slice(0, 18)) {
+  for (const childPage of childPages.slice(0, 20)) {
     if (output.length >= MAX_DISCOVERED_PAGES) break;
     if (seen.has(childPage.id)) continue;
 
@@ -669,9 +914,9 @@ async function collectPageCandidate(
   }
 }
 
-async function getNotionContext(question: string): Promise<NotionContextPage[]> {
-  const terms = buildSearchTerms(question);
-  const searchQueries = Array.from(new Set([question, ...terms])).slice(0, 8);
+async function getNotionContext(question: string): Promise<NotionContextResult> {
+  const searchTerms = buildSearchTerms(question);
+  const searchQueries = buildSearchQueries(question, searchTerms);
 
   const seedPageMap = new Map<string, NotionPage>();
 
@@ -692,7 +937,7 @@ async function getNotionContext(question: string): Promise<NotionContextPage[]> 
   const seen = new Set<string>();
   const discoveredPages: NotionContextPage[] = [];
 
-  for (const page of Array.from(seedPageMap.values()).slice(0, 45)) {
+  for (const page of Array.from(seedPageMap.values()).slice(0, 48)) {
     if (discoveredPages.length >= MAX_DISCOVERED_PAGES) break;
     await collectPageCandidate(page, 0, "", seen, discoveredPages);
   }
@@ -705,16 +950,33 @@ async function getNotionContext(question: string): Promise<NotionContextPage[]> 
     .sort((a, b) => b.score - a.score);
 
   const maxScore = scoredPages[0]?.score ?? 0;
+  const minimumScore = maxScore <= 0 ? 0 : Math.max(5, Math.min(22, maxScore * 0.22));
 
-  if (maxScore <= 0) {
-    return scoredPages.slice(0, 4);
-  }
+  const filtered =
+    maxScore <= 0
+      ? scoredPages.slice(0, 4)
+      : scoredPages.filter((page) => page.score >= minimumScore);
 
-  const minimumScore = Math.max(4, Math.min(18, maxScore * 0.18));
+  const selectedPages = (filtered.length > 0 ? filtered : scoredPages).slice(
+    0,
+    MAX_CONTEXT_PAGES
+  );
 
-  const filtered = scoredPages.filter((page) => page.score >= minimumScore);
+  const debug = createSearchDebug(
+    searchTerms,
+    searchQueries,
+    databasePages.length,
+    seedPageMap.size,
+    scoredPages,
+    selectedPages,
+    maxScore,
+    minimumScore
+  );
 
-  return (filtered.length > 0 ? filtered : scoredPages).slice(0, MAX_CONTEXT_PAGES);
+  return {
+    pages: selectedPages,
+    debug,
+  };
 }
 
 function buildContextText(pages: NotionContextPage[]): string {
@@ -739,14 +1001,16 @@ ${page.content || "本文なし"}
 async function callOpenAI(
   question: string,
   requestedBy: string,
-  contextPages: NotionContextPage[]
+  contextPages: NotionContextPage[],
+  debug: SearchDebug
 ): Promise<AnswerPayload> {
   const apiKey = process.env.OPENAI_API_KEY;
   const model = process.env.OPENAI_MODEL || "gpt-5.5";
 
   if (!apiKey) {
     return fallbackPayload(
-      "OPENAI_API_KEY がVercelの環境変数に設定されていません。VercelのEnvironment Variablesに OPENAI_API_KEY を追加し、再デプロイしてください。"
+      "OPENAI_API_KEY がVercelの環境変数に設定されていません。VercelのEnvironment Variablesに OPENAI_API_KEY を追加し、再デプロイしてください。",
+      debug
     );
   }
 
@@ -872,7 +1136,8 @@ ${contextText}
 
 HTTP ${openAiResponse.status}
 
-${raw.slice(0, 1000)}`
+${raw.slice(0, 1000)}`,
+      debug
     );
   }
 
@@ -884,7 +1149,8 @@ ${raw.slice(0, 1000)}`
     return fallbackPayload(
       `OpenAI APIからJSONではない応答が返りました。
 
-${raw.slice(0, 1000)}`
+${raw.slice(0, 1000)}`,
+      debug
     );
   }
 
@@ -894,18 +1160,20 @@ ${raw.slice(0, 1000)}`
     return fallbackPayload(
       `OpenAI APIの応答から本文を取り出せませんでした。
 
-${raw.slice(0, 1000)}`
+${raw.slice(0, 1000)}`,
+      debug
     );
   }
 
   try {
     const parsed = JSON.parse(outputText) as Partial<AnswerPayload>;
-    return normalizePayload(question, parsed, referenceTitles);
+    return normalizePayload(question, parsed, referenceTitles, debug);
   } catch {
     return fallbackPayload(
       `OpenAI APIの応答をJSONとして読み取れませんでした。
 
-${outputText.slice(0, 1000)}`
+${outputText.slice(0, 1000)}`,
+      debug
     );
   }
 }
@@ -929,8 +1197,13 @@ export default async function handler(request: ApiRequest, response: ApiResponse
   const requestedBy = body.requestedBy ?? "unknown";
 
   try {
-    const contextPages = await getNotionContext(question);
-    const answerPayload = await callOpenAI(question, requestedBy, contextPages);
+    const contextResult = await getNotionContext(question);
+    const answerPayload = await callOpenAI(
+      question,
+      requestedBy,
+      contextResult.pages,
+      contextResult.debug
+    );
 
     return response.status(200).json(answerPayload);
   } catch (error) {
