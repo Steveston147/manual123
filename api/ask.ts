@@ -53,6 +53,11 @@ type NotionPage = {
   last_edited_time?: string;
 };
 
+type ChildPageRef = {
+  id: string;
+  title: string;
+};
+
 type NotionContextPage = {
   id: string;
   title: string;
@@ -61,6 +66,10 @@ type NotionContextPage = {
   content: string;
   score: number;
 };
+
+const MAX_CONTEXT_PAGES = 7;
+const MAX_DISCOVERED_PAGES = 55;
+const MAX_PAGE_CONTENT_LENGTH = 3500;
 
 function parseBody(body: ApiRequest["body"]): AskRequestBody {
   if (!body) return {};
@@ -137,6 +146,22 @@ function extractBlockText(block: any): string {
     return `${checked} ${extractPlainText(value.rich_text)}`;
   }
 
+  if (type === "table_row" && Array.isArray(value.cells)) {
+    return value.cells
+      .map((cell: any[]) => extractPlainText(cell))
+      .filter(Boolean)
+      .join(" | ");
+  }
+
+  if (type === "file") {
+    return value.name ?? value.file?.url ?? value.external?.url ?? "";
+  }
+
+  if (type === "image") {
+    const caption = extractPlainText(value.caption);
+    return caption ? `画像: ${caption}` : "";
+  }
+
   if (Array.isArray(value.rich_text)) {
     return extractPlainText(value.rich_text);
   }
@@ -148,59 +173,136 @@ function extractBlockText(block: any): string {
   return "";
 }
 
-function buildSearchTerms(question: string): string[] {
-  const cleaned = question
+function normalizeTextForSearch(value: string): string {
+  return value
+    .toLowerCase()
     .replace(/[、。！？!?,.()[\]【】「」『』]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function buildSearchTerms(question: string): string[] {
+  const cleaned = normalizeTextForSearch(question);
 
   const roughTerms = cleaned
     .split(" ")
     .map((term) => term.trim())
     .filter((term) => term.length >= 2);
 
-  const importantTerms = [
+  const domainTerms = [
     "バス",
     "大型バス",
+    "貸切バス",
+    "観光バス",
+    "ヤサカ",
+    "ヤサカ観光",
     "発注",
+    "業者発注",
     "申請",
-    "支払",
+    "購買",
+    "COUPA",
+    "スマートDB",
     "経理",
+    "支払",
+    "支払い",
     "請求",
     "見積",
+    "見積書",
+    "発注書",
+    "納品書",
+    "業務完了報告書",
     "ホテル",
     "宿舎",
     "参加者",
     "募集",
     "フォーム",
     "Convera",
-    "COUPA",
     "精算",
     "報告",
     "ガイド",
     "講師",
     "謝金",
-  ].filter((term) => question.includes(term));
+  ];
 
-  return Array.from(new Set([...importantTerms, ...roughTerms]));
+  const expandedTerms: string[] = [];
+
+  if (question.includes("バス")) {
+    expandedTerms.push(
+      "大型バス",
+      "貸切バス",
+      "観光バス",
+      "ヤサカ",
+      "ヤサカ観光",
+      "業者発注",
+      "発注",
+      "見積",
+      "発注書",
+      "納品書",
+      "請求書",
+      "経理",
+      "支払",
+      "COUPA"
+    );
+  }
+
+  if (question.includes("発注")) {
+    expandedTerms.push(
+      "業者発注",
+      "発注書",
+      "見積",
+      "見積書",
+      "納品書",
+      "請求書",
+      "経理",
+      "支払",
+      "COUPA"
+    );
+  }
+
+  if (question.includes("支払") || question.includes("支払い") || question.includes("請求")) {
+    expandedTerms.push("経理", "支払", "請求", "請求書", "インボイス", "Convera");
+  }
+
+  const matchedTerms = domainTerms.filter((term) => question.includes(term));
+
+  return Array.from(new Set([...matchedTerms, ...expandedTerms, ...roughTerms])).filter(
+    (term) => term.length >= 2
+  );
 }
 
 function scorePage(question: string, page: NotionContextPage): number {
   const terms = buildSearchTerms(question);
-  const title = page.title.toLowerCase();
-  const content = page.content.toLowerCase();
-  const q = question.toLowerCase();
+  const title = normalizeTextForSearch(page.title);
+  const content = normalizeTextForSearch(page.content);
+  const q = normalizeTextForSearch(question);
 
   let score = 0;
 
-  if (title.includes(q)) score += 20;
-  if (content.includes(q)) score += 12;
+  if (title.includes(q)) score += 40;
+  if (content.includes(q)) score += 18;
 
   for (const term of terms) {
-    const t = term.toLowerCase();
+    const t = normalizeTextForSearch(term);
 
-    if (title.includes(t)) score += 8;
-    if (content.includes(t)) score += 3;
+    if (!t) continue;
+
+    if (title.includes(t)) score += 18;
+    if (content.includes(t)) score += 5;
+  }
+
+  const titleBoostTerms = ["業者発注", "発注", "経理", "支払", "バス", "大型バス", "COUPA", "見積"];
+
+  for (const term of titleBoostTerms) {
+    const t = normalizeTextForSearch(term);
+    if (question.includes(term) && title.includes(t)) {
+      score += 18;
+    }
+  }
+
+  const genericTitles = ["はじめに", "緊急連絡先", "ホーム", "目次", "使ってみる"];
+
+  if (genericTitles.some((genericTitle) => title === normalizeTextForSearch(genericTitle))) {
+    score -= 12;
   }
 
   if (page.lastEditedTime) {
@@ -208,6 +310,12 @@ function scorePage(question: string, page: NotionContextPage): number {
   }
 
   return score;
+}
+
+function stripListPrefix(value: string): string {
+  return value
+    .replace(/^\s*(\d+[\.\)]|[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳]|[-・●■])\s*/g, "")
+    .trim();
 }
 
 function fallbackPayload(message: string): AnswerPayload {
@@ -246,21 +354,32 @@ function normalizePayload(
 ): AnswerPayload {
   const now = new Date().toISOString();
 
+  const normalizedSteps =
+    Array.isArray(data.steps) && data.steps.length > 0
+      ? data.steps
+          .map((step) => (typeof step === "string" ? stripListPrefix(step) : ""))
+          .filter(Boolean)
+      : ["質問内容を確認する", "Notion上の関連ページを確認する", "必要な手続きを進める"];
+
+  const normalizedChecklist =
+    Array.isArray(data.checklist) && data.checklist.length > 0
+      ? data.checklist
+          .map((item) => ({
+            text:
+              typeof item.text === "string"
+                ? stripListPrefix(item.text)
+                : stripListPrefix(String(item)),
+          }))
+          .filter((item) => item.text)
+      : [{ text: "回答内容を確認した" }, { text: "必要な次の作業を確認した" }];
+
   return {
     answer:
       typeof data.answer === "string" && data.answer.trim()
         ? data.answer
         : `「${question}」について回答を生成しましたが、answerが空でした。`,
-    steps:
-      Array.isArray(data.steps) && data.steps.length > 0
-        ? data.steps
-        : ["質問内容を確認する", "Notion上の関連ページを確認する", "必要な手続きを進める"],
-    checklist:
-      Array.isArray(data.checklist) && data.checklist.length > 0
-        ? data.checklist.map((item) => ({
-            text: typeof item.text === "string" ? item.text : String(item),
-          }))
-        : [{ text: "回答内容を確認した" }, { text: "必要な次の作業を確認した" }],
+    steps: normalizedSteps,
+    checklist: normalizedChecklist,
     imagePrompt:
       typeof data.imagePrompt === "string" && data.imagePrompt.trim()
         ? data.imagePrompt
@@ -327,6 +446,20 @@ async function notionRequest(path: string, options: RequestInit = {}) {
   });
 }
 
+async function retrievePage(pageId: string): Promise<NotionPage | null> {
+  const response = await notionRequest(`/v1/pages/${pageId}`, {
+    method: "GET",
+  });
+
+  const rawText = await response.text();
+
+  if (!response.ok) {
+    return null;
+  }
+
+  return JSON.parse(rawText) as NotionPage;
+}
+
 async function getBlockChildren(blockId: string): Promise<any[]> {
   const results: any[] = [];
   let cursor: string | null = null;
@@ -361,42 +494,70 @@ async function getBlockChildren(blockId: string): Promise<any[]> {
   return results;
 }
 
-async function getPageContent(pageId: string): Promise<string> {
+async function getPageContentAndChildPages(
+  pageId: string
+): Promise<{ content: string; childPages: ChildPageRef[] }> {
   const blocks = await getBlockChildren(pageId);
   const lines: string[] = [];
+  const childPages: ChildPageRef[] = [];
 
   for (const block of blocks) {
+    const type = block?.type;
+
+    if (type === "child_page") {
+      const childTitle = block.child_page?.title ?? "子ページ";
+      childPages.push({
+        id: block.id,
+        title: childTitle,
+      });
+      lines.push(`子ページ: ${childTitle}`);
+      continue;
+    }
+
     const text = extractBlockText(block);
 
     if (text) {
       lines.push(text);
     }
 
-    if (block?.has_children && lines.join("\n").length < 2500) {
+    if (block?.has_children && lines.join("\n").length < MAX_PAGE_CONTENT_LENGTH) {
       const children = await getBlockChildren(block.id);
 
       for (const child of children) {
+        if (child?.type === "child_page") {
+          const childTitle = child.child_page?.title ?? "子ページ";
+          childPages.push({
+            id: child.id,
+            title: childTitle,
+          });
+          lines.push(`子ページ: ${childTitle}`);
+          continue;
+        }
+
         const childText = extractBlockText(child);
 
         if (childText) {
           lines.push(`- ${childText}`);
         }
 
-        if (lines.join("\n").length >= 2500) {
+        if (lines.join("\n").length >= MAX_PAGE_CONTENT_LENGTH) {
           break;
         }
       }
     }
 
-    if (lines.join("\n").length >= 2500) {
+    if (lines.join("\n").length >= MAX_PAGE_CONTENT_LENGTH) {
       break;
     }
   }
 
-  return lines.join("\n").slice(0, 2500);
+  return {
+    content: lines.join("\n").slice(0, MAX_PAGE_CONTENT_LENGTH),
+    childPages,
+  };
 }
 
-async function getNotionContext(question: string): Promise<NotionContextPage[]> {
+async function getDatabasePages(): Promise<NotionPage[]> {
   const databaseId = process.env.NOTION_DATABASE_ID;
 
   if (!databaseId) {
@@ -406,7 +567,7 @@ async function getNotionContext(question: string): Promise<NotionContextPage[]> 
   const response = await notionRequest(`/v1/databases/${databaseId}/query`, {
     method: "POST",
     body: JSON.stringify({
-      page_size: 25,
+      page_size: 35,
     }),
   });
 
@@ -420,29 +581,140 @@ async function getNotionContext(question: string): Promise<NotionContextPage[]> 
     results?: NotionPage[];
   };
 
-  const pages = data.results ?? [];
-  const contextPages: NotionContextPage[] = [];
+  return data.results ?? [];
+}
 
-  for (const page of pages.slice(0, 18)) {
-    const title = extractPageTitle(page);
-    const content = await getPageContent(page.id);
+async function searchNotionPages(query: string): Promise<NotionPage[]> {
+  const trimmed = query.trim();
 
-    const contextPage: NotionContextPage = {
-      id: page.id,
-      title,
-      url: page.url,
-      lastEditedTime: page.last_edited_time,
-      content,
-      score: 0,
-    };
+  if (!trimmed) return [];
 
-    contextPage.score = scorePage(question, contextPage);
-    contextPages.push(contextPage);
+  const response = await notionRequest("/v1/search", {
+    method: "POST",
+    body: JSON.stringify({
+      query: trimmed,
+      filter: {
+        property: "object",
+        value: "page",
+      },
+      sort: {
+        direction: "descending",
+        timestamp: "last_edited_time",
+      },
+      page_size: 8,
+    }),
+  });
+
+  const rawText = await response.text();
+
+  if (!response.ok) {
+    return [];
   }
 
-  return contextPages
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 6);
+  const data = JSON.parse(rawText) as {
+    results?: NotionPage[];
+  };
+
+  return data.results ?? [];
+}
+
+async function collectPageCandidate(
+  page: NotionPage,
+  depth: number,
+  parentPath: string,
+  seen: Set<string>,
+  output: NotionContextPage[]
+): Promise<void> {
+  if (output.length >= MAX_DISCOVERED_PAGES) return;
+  if (seen.has(page.id)) return;
+
+  seen.add(page.id);
+
+  const rawTitle = extractPageTitle(page);
+  const titlePath = parentPath ? `${parentPath} > ${rawTitle}` : rawTitle;
+
+  const { content, childPages } = await getPageContentAndChildPages(page.id);
+
+  output.push({
+    id: page.id,
+    title: titlePath,
+    url: page.url,
+    lastEditedTime: page.last_edited_time,
+    content,
+    score: 0,
+  });
+
+  if (depth >= 3) return;
+
+  for (const childPage of childPages.slice(0, 18)) {
+    if (output.length >= MAX_DISCOVERED_PAGES) break;
+    if (seen.has(childPage.id)) continue;
+
+    const child = await retrievePage(childPage.id);
+
+    if (!child) {
+      output.push({
+        id: childPage.id,
+        title: `${titlePath} > ${childPage.title}`,
+        url: undefined,
+        lastEditedTime: undefined,
+        content: "",
+        score: 0,
+      });
+      seen.add(childPage.id);
+      continue;
+    }
+
+    await collectPageCandidate(child, depth + 1, titlePath, seen, output);
+  }
+}
+
+async function getNotionContext(question: string): Promise<NotionContextPage[]> {
+  const terms = buildSearchTerms(question);
+  const searchQueries = Array.from(new Set([question, ...terms])).slice(0, 8);
+
+  const seedPageMap = new Map<string, NotionPage>();
+
+  const databasePages = await getDatabasePages();
+
+  for (const page of databasePages) {
+    seedPageMap.set(page.id, page);
+  }
+
+  for (const query of searchQueries) {
+    const foundPages = await searchNotionPages(query);
+
+    for (const page of foundPages) {
+      seedPageMap.set(page.id, page);
+    }
+  }
+
+  const seen = new Set<string>();
+  const discoveredPages: NotionContextPage[] = [];
+
+  for (const page of Array.from(seedPageMap.values()).slice(0, 45)) {
+    if (discoveredPages.length >= MAX_DISCOVERED_PAGES) break;
+    await collectPageCandidate(page, 0, "", seen, discoveredPages);
+  }
+
+  const scoredPages = discoveredPages
+    .map((page) => ({
+      ...page,
+      score: scorePage(question, page),
+    }))
+    .sort((a, b) => b.score - a.score);
+
+  const maxScore = scoredPages[0]?.score ?? 0;
+
+  if (maxScore <= 0) {
+    return scoredPages.slice(0, 4);
+  }
+
+  const minimumScore = Math.max(4, Math.min(18, maxScore * 0.18));
+
+  const filtered = scoredPages.filter((page) => page.score >= minimumScore);
+
+  return (filtered.length > 0 ? filtered : scoredPages).slice(0, MAX_CONTEXT_PAGES);
 }
 
 function buildContextText(pages: NotionContextPage[]): string {
@@ -454,6 +726,7 @@ function buildContextText(pages: NotionContextPage[]): string {
     .map((page, index) => {
       return `【参照${index + 1}】
 タイトル: ${page.title}
+関連度スコア: ${page.score}
 最終更新: ${page.lastEditedTime ?? "不明"}
 URL: ${page.url ?? "URLなし"}
 内容:
@@ -478,7 +751,10 @@ async function callOpenAI(
   }
 
   const contextText = buildContextText(contextPages);
-  const referenceTitles = contextPages.map((page) => page.title).filter(Boolean);
+  const referenceTitles = contextPages
+    .filter((page) => page.score > 0)
+    .map((page) => page.title)
+    .filter(Boolean);
 
   const prompt = `
 あなたはRSJP業務マニュアルAIです。
@@ -496,14 +772,18 @@ ${contextText}
 回答条件:
 - 日本語で回答する
 - 初心者向けに、やさしく具体的に説明する
-- Notionマニュアル情報に書かれている内容を優先する
-- Notionマニュアル情報にない内容は推測で断定しない
+- Notionマニュアル情報に書かれている内容を最優先する
+- Notionマニュアル情報に書かれていない内容は、推測で断定しない
 - 情報が不足している場合は「Notion上では確認できませんでした」と明記する
+- ただし、Notion情報から安全に言える範囲の一般的な流れは「確認が必要な一般的流れ」として分けて書く
 - 担当者個人に依存した表現を避ける
 - 必要に応じて「最新の学内ルール・担当部署の指示を確認してください」と入れる
-- referencesには実際に使ったNotionページタイトルを入れる
+- referencesには実際に使ったNotionページタイトルのみを入れる
 - imageUrlは空文字にする
 - imagePromptには、1枚スライド画像を作るための具体的な日本語プロンプトを書く
+- stepsの各要素には、番号、丸数字、箇条書き記号を入れない
+- checklistの各textには、番号、丸数字、箇条書き記号を入れない
+- answer内では「Notionで確認できたこと」「Notionで確認できなかったこと」「次に確認すること」を自然に分ける
 `;
 
   const openAiResponse = await fetch("https://api.openai.com/v1/responses", {
