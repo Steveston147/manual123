@@ -1,6 +1,6 @@
 // FILE: src/App.tsx
 // PATH: src/App.tsx
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { FormEvent } from "react";
 import "./App.css";
 
@@ -196,6 +196,22 @@ function formatDateTime(value?: string) {
   }
 
   return date.toLocaleString("ja-JP");
+}
+
+function formatHeaderDateTime(value: Date) {
+  const datePart = value.toLocaleDateString("ja-JP", {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+    weekday: "short",
+  });
+
+  const timePart = value.toLocaleTimeString("ja-JP", {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+
+  return `${datePart} ${timePart}`;
 }
 
 function stripListPrefixForUi(value: string) {
@@ -641,6 +657,7 @@ export default function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [currentDateTime, setCurrentDateTime] = useState(() => new Date());
   const [imageLoadingIds, setImageLoadingIds] = useState<Record<string, boolean>>({});
   const [imageErrors, setImageErrors] = useState<Record<string, string>>({});
   const [generatedImageUrls, setGeneratedImageUrls] = useState<Record<string, string>>({});
@@ -668,6 +685,14 @@ export default function App() {
         .find((message) => message.role === "assistant" && message.payload),
     [messages]
   );
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setCurrentDateTime(new Date());
+    }, 1000);
+
+    return () => window.clearInterval(timer);
+  }, []);
 
   function persistMessages(next: ChatMessage[]) {
     setMessages(next);
@@ -1256,6 +1281,10 @@ export default function App() {
       <div className="app-shell">
         <header className="top-header app-hero">
           <div className="hero-copy">{renderHeroCopy()}</div>
+
+          <div className="hero-actions">
+            <span className="status-pill">{formatHeaderDateTime(currentDateTime)}</span>
+          </div>
         </header>
 
         <section className="left-panel login-panel">
@@ -1318,6 +1347,7 @@ export default function App() {
         <div className="hero-copy">{renderHeroCopy()}</div>
 
         <div className="hero-actions">
+          <span className="status-pill">{formatHeaderDateTime(currentDateTime)}</span>
           <span className="status-pill">Ready</span>
           <button
             type="button"
