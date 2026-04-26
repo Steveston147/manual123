@@ -105,6 +105,8 @@ const DEFAULT_SETTINGS = {
   imageModel: "gpt-image-1",
 };
 
+const ENABLE_IMAGE_GENERATION: boolean = false;
+
 const DEFAULT_MANAGER_GATE: ManagerGate = {
   canProceedAlone: [
     "Notionに明記された手順を確認する",
@@ -153,7 +155,7 @@ const LOGIN_FEATURES = [
   },
   {
     title: "手順化",
-    text: "長い業務説明を、作業順・チェックリスト・図解に整理します。",
+    text: "長い業務説明を、作業順・チェックリスト・確認ポイントに整理します。",
     icon: "▣",
   },
   {
@@ -1265,76 +1267,78 @@ export default function App() {
           )}
         </section>
 
-        <section className="answer-section image-section">
-          <div className="section-heading-row">
-            <h4>1枚スライド用の図解</h4>
-            <span className="section-badge">文字はUI表示</span>
-          </div>
+        {ENABLE_IMAGE_GENERATION && (
+          <section className="answer-section image-section">
+            <div className="section-heading-row">
+              <h4>1枚スライド用の図解</h4>
+              <span className="section-badge">文字はUI表示</span>
+            </div>
 
-          {renderSlidePreview(payload)}
+            {renderSlidePreview(payload)}
 
-          <details className="image-prompt-box no-print">
-            <summary>背景画像プロンプト（画像生成に使う内容）</summary>
-            <p>{backgroundPrompt}</p>
-          </details>
-
-          {payload.imagePrompt && (
-            <details className="debug-panel raw-prompt-panel no-print">
-              <summary>AIが返した元の図解プロンプト（参考・画像生成には使いません）</summary>
-              <p className="meta">{payload.imagePrompt}</p>
+            <details className="image-prompt-box no-print">
+              <summary>背景画像プロンプト（画像生成に使う内容）</summary>
+              <p>{backgroundPrompt}</p>
             </details>
-          )}
 
-          <div className="generated-image-box no-print">
-            <button
-              type="button"
-              className="primary"
-              onClick={() => void generateImage(messageId, payload)}
-              disabled={isGeneratingImage || !backgroundPrompt.trim()}
-            >
-              {isGeneratingImage
-                ? "背景画像を生成中..."
-                : displayImageUrl
-                  ? "背景画像を再生成"
-                  : "背景画像を生成"}
-            </button>
-          </div>
+            {payload.imagePrompt && (
+              <details className="debug-panel raw-prompt-panel no-print">
+                <summary>AIが返した元の図解プロンプト（参考・画像生成には使いません）</summary>
+                <p className="meta">{payload.imagePrompt}</p>
+              </details>
+            )}
 
-          {isGeneratingImage && (
-            <div className="mini-loading-row no-print">
-              <span className="mini-spinner" />
-              <span>背景画像を生成しています。少し時間がかかります。</span>
-            </div>
-          )}
-
-          {imageError && <p className="error no-print">{imageError}</p>}
-
-          {displayImageUrl ? (
-            <div className="generated-image-box">
-              <a
-                href={displayImageUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="inline-link no-print"
+            <div className="generated-image-box no-print">
+              <button
+                type="button"
+                className="primary"
+                onClick={() => void generateImage(messageId, payload)}
+                disabled={isGeneratingImage || !backgroundPrompt.trim()}
               >
-                画像を開く
-              </a>
+                {isGeneratingImage
+                  ? "背景画像を生成中..."
+                  : displayImageUrl
+                    ? "背景画像を再生成"
+                    : "背景画像を生成"}
+              </button>
+            </div>
 
-              <img
-                src={displayImageUrl}
-                alt="生成された背景画像"
-                className="generated-image"
-              />
-            </div>
-          ) : (
-            <div className="image-empty-box no-print">
-              <p className="image-empty-title">背景画像はまだ生成されていません。</p>
-              <p className="meta">
-                日本語は上の図解カードで表示します。画像生成は背景・雰囲気用です。
-              </p>
-            </div>
-          )}
-        </section>
+            {isGeneratingImage && (
+              <div className="mini-loading-row no-print">
+                <span className="mini-spinner" />
+                <span>背景画像を生成しています。少し時間がかかります。</span>
+              </div>
+            )}
+
+            {imageError && <p className="error no-print">{imageError}</p>}
+
+            {displayImageUrl ? (
+              <div className="generated-image-box">
+                <a
+                  href={displayImageUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-link no-print"
+                >
+                  画像を開く
+                </a>
+
+                <img
+                  src={displayImageUrl}
+                  alt="生成された背景画像"
+                  className="generated-image"
+                />
+              </div>
+            ) : (
+              <div className="image-empty-box no-print">
+                <p className="image-empty-title">背景画像はまだ生成されていません。</p>
+                <p className="meta">
+                  日本語は上の図解カードで表示します。画像生成は背景・雰囲気用です。
+                </p>
+              </div>
+            )}
+          </section>
+        )}
 
         <section className="answer-section">
           <div className="section-heading-row">
@@ -1713,7 +1717,7 @@ export default function App() {
                 <p className="mini-label">Ready to start</p>
                 <h2>まずは業務を1つ質問してください</h2>
                 <p>
-                  質問すると、回答・課長確認ゲート・手順・チェックリスト・図解用プレビューをまとめて表示します。
+                  質問すると、回答・課長確認ゲート・手順・チェックリストをまとめて表示します。
                 </p>
 
                 <div className="empty-sample-grid no-print">
@@ -1823,18 +1827,20 @@ export default function App() {
             />
           </label>
 
-          <label>
-            画像モデル（ChatGPT API）
-            <input
-              value={settings.imageModel}
-              onChange={(event) =>
-                persistSettings({
-                  ...settings,
-                  imageModel: event.target.value,
-                })
-              }
-            />
-          </label>
+          {ENABLE_IMAGE_GENERATION && (
+            <label>
+              画像モデル（ChatGPT API）
+              <input
+                value={settings.imageModel}
+                onChange={(event) =>
+                  persistSettings({
+                    ...settings,
+                    imageModel: event.target.value,
+                  })
+                }
+              />
+            </label>
+          )}
 
           <label className="inline">
             <input
@@ -1892,7 +1898,7 @@ export default function App() {
             <li>NotionはAPI連携で取得（スクレイピング前提にしない）。</li>
             <li>新人が単独で進めてよい作業と、課長確認が必要な判断を分けて表示する。</li>
             <li>費用・契約・受入可否・例外対応・個人情報などは、先方回答前の確認対象にする。</li>
-            <li>画像生成AIには文字を描かせず、背景画像だけを生成する。</li>
+            <li>画像生成UIは現在停止中。将来再開できるようコードは残す。</li>
             <li>正確な日本語ラベル・手順・注意点はHTML/CSSで表示する。</li>
             <li>印刷時は操作ボタンや開発用情報を非表示にし、回答本文を中心に出力する。</li>
             <li>修正回答はNotion DBへ直接追記。</li>
