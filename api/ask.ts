@@ -17,11 +17,19 @@ type AskRequestBody = {
   policy?: {
     beginnerFriendly?: boolean;
     avoidPersonalDependency?: boolean;
+    includeManagerApprovalGate?: boolean;
   };
 };
 
 type ChecklistItem = {
   text: string;
+};
+
+type ManagerGate = {
+  canProceedAlone: string[];
+  needManagerApproval: string[];
+  approvalTiming: string[];
+  managerQuestionTemplate: string;
 };
 
 type SearchDebugPage = {
@@ -46,6 +54,7 @@ type SearchDebug = {
 
 type AnswerPayload = {
   answer: string;
+  managerGate: ManagerGate;
   steps: string[];
   checklist: ChecklistItem[];
   imagePrompt: string;
@@ -110,6 +119,34 @@ const MAX_CHILD_PAGES_PER_PAGE = 30;
 const MAX_CHILD_DATABASE_PAGES = 45;
 const MAX_RECURSION_DEPTH = 4;
 const MAX_NESTED_BLOCK_DEPTH = 3;
+
+const DEFAULT_MANAGER_GATE: ManagerGate = {
+  canProceedAlone: [
+    "Notionに明記された手順を確認する",
+    "事実関係を整理する",
+    "必要情報を洗い出す",
+    "既存テンプレートに沿って下書きを作成する",
+    "参照元とチェックリストを確認する",
+    "課長確認用のメモを作成する",
+  ],
+  needManagerApproval: [
+    "費用、見積、請求、支払方法、支払期限、キャンセル料に関わる判断",
+    "契約、合意書、受入可否、参加対象外への案内に関わる判断",
+    "学内ルールに明記されていない例外対応",
+    "先方へ確約する内容や、相手機関との交渉に関わる内容",
+    "過去対応と異なる判断、部署間調整、トラブル・クレーム対応",
+    "個人情報、アレルギー、医療情報など慎重な取扱いが必要な情報",
+  ],
+  approvalTiming: [
+    "先方へメールや回答を送る前",
+    "金額、日程、受入可否、支払条件などを確定する前",
+    "通常ルールから外れる可能性があるとき",
+    "Notion上の記載だけでは判断できないとき",
+    "自分で判断してよいか少しでも迷ったとき",
+  ],
+  managerQuestionTemplate:
+    "以下の件について、Notion上では〇〇と理解しました。\n先方へ回答する前に確認させてください。\nこの理解で進めてよろしいでしょうか。",
+};
 
 const PONCHI_STYLES = [
   "親しみやすいポンチ絵風。丸みのある人物と大きなアイコン。淡い水色と白を基調にした清潔な業務マニュアル風。",
@@ -703,6 +740,45 @@ ${style}
 - かわいすぎず、大学事務の資料として使える落ち着きにする。`;
 }
 
+function normalizeStringArray(value: unknown, fallback: string[]): string[] {
+  if (!Array.isArray(value)) return fallback;
+
+  const normalized = value
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => stripListPrefix(item).trim())
+    .filter(Boolean);
+
+  return normalized.length > 0 ? normalized : fallback;
+}
+
+function normalizeManagerGate(value: unknown): ManagerGate {
+  if (!value || typeof value !== "object") {
+    return DEFAULT_MANAGER_GATE;
+  }
+
+  const data = value as Partial<ManagerGate>;
+
+  return {
+    canProceedAlone: normalizeStringArray(
+      data.canProceedAlone,
+      DEFAULT_MANAGER_GATE.canProceedAlone
+    ),
+    needManagerApproval: normalizeStringArray(
+      data.needManagerApproval,
+      DEFAULT_MANAGER_GATE.needManagerApproval
+    ),
+    approvalTiming: normalizeStringArray(
+      data.approvalTiming,
+      DEFAULT_MANAGER_GATE.approvalTiming
+    ),
+    managerQuestionTemplate:
+      typeof data.managerQuestionTemplate === "string" &&
+      data.managerQuestionTemplate.trim()
+        ? data.managerQuestionTemplate.trim()
+        : DEFAULT_MANAGER_GATE.managerQuestionTemplate,
+  };
+}
+
 function fallbackPayload(message: string, debug?: SearchDebug): AnswerPayload {
   const fallbackSteps = [
     "VercelのEnvironment Variablesを確認する",
@@ -720,10 +796,12 @@ function fallbackPayload(message: string, debug?: SearchDebug): AnswerPayload {
     { text: "Notion DBをIntegrationに共有している" },
     { text: "OPENAI_API_KEYが設定されている" },
     { text: "Vercelの最新デプロイが成功している" },
+    { text: "先方へ回答する前に課長確認が必要な内容を確認した" },
   ];
 
   return {
     answer: message,
+    managerGate: DEFAULT_MANAGER_GATE,
     steps: fallbackSteps,
     checklist: fallbackChecklist,
     imagePrompt: buildPonchiImagePrompt("API接続確認", fallbackSteps, fallbackChecklist),
@@ -790,13 +868,20 @@ function normalizePayload(
                 : stripListPrefix(String(item)),
           }))
           .filter((item) => item.text)
-      : [{ text: "回答内容を確認した" }, { text: "必要な次の作業を確認した" }];
+      : [
+          { text: "回答内容を確認した" },
+          { text: "必要な次の作業を確認した" },
+          { text: "先方へ回答する前に課長確認が必要な点を確認した" },
+        ];
+
+  const normalizedManagerGate = normalizeManagerGate(data.managerGate);
 
   return {
     answer:
       typeof data.answer === "string" && data.answer.trim()
         ? data.answer
         : `「${question}」について回答を生成しましたが、answerが空でした。`,
+    managerGate: normalizedManagerGate,
     steps: normalizedSteps,
     checklist: normalizedChecklist,
     imagePrompt: buildPonchiImagePrompt(question, normalizedSteps, normalizedChecklist),
@@ -1274,6 +1359,9 @@ async function callOpenAI(
 あなたはRSJP業務マニュアルAIです。
 以下のNotionマニュアル情報を根拠に、社内業務を初心者にも分かるように説明してください。
 
+このAIは、単なる回答作成ツールではありません。
+新人職員が自分で作業を進められるようにしつつ、危ない判断の前に課長確認へ誘導する業務ナビです。
+
 質問者:
 ${requestedBy || "unknown"}
 
@@ -1303,6 +1391,49 @@ ${contextText}
 - stepsの各要素には、番号、丸数字、箇条書き記号を入れない
 - checklistの各textには、番号、丸数字、箇条書き記号を入れない
 - answer内では「Notionで確認できたこと」「Notionで確認できなかったこと」「次に確認すること」を自然に分ける
+
+課長確認ゲートの作成条件:
+- managerGateを必ず作成する
+- managerGate.canProceedAloneには、新人が単独で進めてもよい作業だけを入れる
+- managerGate.needManagerApprovalには、課長確認が必要な判断を入れる
+- managerGate.approvalTimingには、どのタイミングで課長確認するかを入れる
+- managerGate.managerQuestionTemplateには、課長へ確認するための短い文例を入れる
+- managerGate内の各配列要素には、番号、丸数字、箇条書き記号を入れない
+- Notion上で根拠が不足する場合は、先方へ回答する前に課長確認が必要とする
+- 断定できないことは、課長確認が必要な項目に寄せる
+
+課長確認が必要な固定ルール:
+以下に関わる内容は、原則として課長確認が必要です。
+- 費用
+- 見積
+- 請求
+- 支払方法
+- 支払期限
+- キャンセル料
+- 契約
+- 合意書
+- 受入可否
+- 参加対象外への案内
+- 例外対応
+- 学内ルールに明記されていない判断
+- 先方へ確約する内容
+- 大学や相手機関との交渉
+- 過去対応と異なる判断
+- 部署間調整が必要なこと
+- トラブル、クレーム対応
+- 個人情報、アレルギー、医療情報に関わること
+
+新人が進めてよい固定ルール:
+以下は、新人が作業として進めてよい範囲です。
+ただし、先方送信前、確定前、判断に迷う場合は課長確認が必要です。
+- Notionに明記された手順の確認
+- 事実関係の整理
+- 必要情報の洗い出し
+- 下書き作成
+- チェックリスト確認
+- 参照元の確認
+- 課長確認用メモの作成
+- 既存テンプレートに沿った準備
 `;
 
   const openAiResponse = await fetch("https://api.openai.com/v1/responses", {
@@ -1327,6 +1458,7 @@ ${contextText}
             additionalProperties: false,
             required: [
               "answer",
+              "managerGate",
               "steps",
               "checklist",
               "imagePrompt",
@@ -1338,6 +1470,39 @@ ${contextText}
             properties: {
               answer: {
                 type: "string",
+              },
+              managerGate: {
+                type: "object",
+                additionalProperties: false,
+                required: [
+                  "canProceedAlone",
+                  "needManagerApproval",
+                  "approvalTiming",
+                  "managerQuestionTemplate",
+                ],
+                properties: {
+                  canProceedAlone: {
+                    type: "array",
+                    items: {
+                      type: "string",
+                    },
+                  },
+                  needManagerApproval: {
+                    type: "array",
+                    items: {
+                      type: "string",
+                    },
+                  },
+                  approvalTiming: {
+                    type: "array",
+                    items: {
+                      type: "string",
+                    },
+                  },
+                  managerQuestionTemplate: {
+                    type: "string",
+                  },
+                },
               },
               steps: {
                 type: "array",
