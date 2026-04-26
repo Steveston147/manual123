@@ -1834,3 +1834,362 @@ button.primary {
     overflow: visible !important;
   }
 }
+/* FILE: src/App.css */
+/* PATH: src/App.css */
+
+/* =========================================================
+   Commercial SaaS header refinement
+   上部バナーを左揃え・低め・商用アプリ風に整理する
+========================================================= */
+
+body {
+  background:
+    linear-gradient(180deg, #f8fafc 0%, #eef3f8 100%) !important;
+}
+
+.app-shell.pro-shell {
+  width: min(1180px, 100%) !important;
+  padding: 18px 18px 32px !important;
+}
+
+/* 上部バナー：装飾を抑え、左揃えの業務アプリ風に */
+.top-header.pro-hero {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) auto !important;
+  align-items: center !important;
+  gap: 18px !important;
+  min-height: auto !important;
+  margin-bottom: 12px !important;
+  padding: 18px 22px !important;
+  border-radius: 20px !important;
+  background: rgba(255, 255, 255, 0.94) !important;
+  border: 1px solid rgba(226, 232, 240, 0.95) !important;
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.06) !important;
+}
+
+/* 右上の大きな水色装飾を消して、プロダクト画面らしくする */
+.top-header.pro-hero::after {
+  display: none !important;
+}
+
+/* ブランド部分を左にきれいに揃える */
+.top-header.pro-hero .brand-row {
+  justify-content: flex-start !important;
+  align-items: center !important;
+  gap: 14px !important;
+}
+
+.top-header.pro-hero .brand-logo {
+  width: 48px !important;
+  height: 48px !important;
+  border-radius: 14px !important;
+  padding: 5px !important;
+  background: #ffffff !important;
+  border: 1px solid #e2e8f0 !important;
+  box-shadow: none !important;
+}
+
+.top-header.pro-hero .brand-copy {
+  display: grid !important;
+  gap: 2px !important;
+  justify-items: start !important;
+  text-align: left !important;
+}
+
+.top-header.pro-hero .hero-kicker {
+  margin: 0 !important;
+  padding: 0 !important;
+  background: transparent !important;
+  border: none !important;
+  color: #64748b !important;
+  font-size: 10.5px !important;
+  font-weight: 800 !important;
+  letter-spacing: 0.09em !important;
+  text-transform: uppercase !important;
+}
+
+.top-header.pro-hero h1 {
+  margin: 0 !important;
+  color: #0f172a !important;
+  font-size: 25px !important;
+  line-height: 1.16 !important;
+  letter-spacing: -0.035em !important;
+}
+
+.top-header.pro-hero p {
+  margin: 0 !important;
+  max-width: 620px !important;
+  color: #475569 !important;
+  font-size: 14px !important;
+  line-height: 1.55 !important;
+}
+
+/* 右側ユーティリティ：小さく、控えめに */
+.top-header.pro-hero .hero-actions {
+  justify-content: flex-end !important;
+  align-items: center !important;
+  gap: 8px !important;
+  flex-wrap: nowrap !important;
+}
+
+.top-header.pro-hero .status-pill {
+  min-height: 34px !important;
+  padding: 7px 11px !important;
+  border-radius: 999px !important;
+  background: #f8fafc !important;
+  border: 1px solid #e2e8f0 !important;
+  color: #334155 !important;
+  font-size: 11.5px !important;
+  font-weight: 800 !important;
+  box-shadow: none !important;
+}
+
+.top-header.pro-hero .date-pill {
+  background: #f0fdf4 !important;
+  border-color: #bbf7d0 !important;
+  color: #166534 !important;
+}
+
+.top-header.pro-hero .status-pill::before {
+  width: 6px !important;
+  height: 6px !important;
+}
+
+.top-header.pro-hero button {
+  min-height: 34px !important;
+  padding: 7px 12px !important;
+  border-radius: 999px !important;
+  background: #ffffff !important;
+  border: 1px solid #dbeafe !important;
+  color: #1d4ed8 !important;
+  font-size: 12px !important;
+  font-weight: 900 !important;
+  box-shadow: none !important;
+}
+
+/* 上部4カード：大きなカードではなく、軽いステータスバー風に */
+.dashboard-overview {
+  grid-template-columns: 0.8fr 1fr 1fr 1.35fr !important;
+  gap: 10px !important;
+  margin: 0 0 12px !important;
+}
+
+.overview-card {
+  min-height: 68px !important;
+  padding: 12px 14px !important;
+  border-radius: 16px !important;
+  background: rgba(255, 255, 255, 0.88) !important;
+  border: 1px solid #e6edf7 !important;
+  box-shadow: none !important;
+  text-align: left !important;
+  justify-items: start !important;
+  align-content: center !important;
+  backdrop-filter: blur(8px) !important;
+}
+
+.overview-card .mini-label {
+  margin: 0 0 5px !important;
+  color: #64748b !important;
+  font-size: 10.5px !important;
+  font-weight: 900 !important;
+  letter-spacing: 0.06em !important;
+  text-transform: uppercase !important;
+}
+
+.overview-card strong {
+  display: -webkit-box !important;
+  max-width: 100% !important;
+  margin: 0 !important;
+  color: #1e293b !important;
+  font-size: 15px !important;
+  font-weight: 850 !important;
+  line-height: 1.35 !important;
+  overflow: hidden !important;
+  overflow-wrap: anywhere !important;
+  -webkit-line-clamp: 2 !important;
+  -webkit-box-orient: vertical !important;
+}
+
+.overview-card span {
+  margin-top: 2px !important;
+  color: #64748b !important;
+  font-size: 11.5px !important;
+  line-height: 1.45 !important;
+}
+
+.overview-card:first-child strong {
+  font-size: 20px !important;
+  letter-spacing: -0.02em !important;
+}
+
+.overview-card-wide strong {
+  font-size: 14px !important;
+}
+
+/* タブ：存在感を少し落として、業務アプリのナビにする */
+.pro-tab-row {
+  position: sticky !important;
+  top: 8px !important;
+  z-index: 5 !important;
+  justify-content: flex-start !important;
+  gap: 6px !important;
+  margin-bottom: 12px !important;
+  padding: 6px !important;
+  border-radius: 16px !important;
+  background: rgba(255, 255, 255, 0.88) !important;
+  border: 1px solid #e2e8f0 !important;
+  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.045) !important;
+  backdrop-filter: blur(10px) !important;
+}
+
+.pro-tab-row button {
+  padding: 8px 14px !important;
+  border-radius: 12px !important;
+  border: 1px solid transparent !important;
+  background: transparent !important;
+  color: #475569 !important;
+  font-size: 14px !important;
+  font-weight: 850 !important;
+  box-shadow: none !important;
+}
+
+.pro-tab-row button.active {
+  background: #eff6ff !important;
+  border-color: #bfdbfe !important;
+  color: #1d4ed8 !important;
+  box-shadow: none !important;
+}
+
+/* メイン領域：左右の重心を整える */
+.chat-layout.pro-chat-layout {
+  grid-template-columns: 340px minmax(0, 1fr) !important;
+  gap: 14px !important;
+  align-items: start !important;
+}
+
+.left-panel,
+.timeline,
+.ops-panel,
+.guide-panel {
+  border-radius: 18px !important;
+  border-color: #e2e8f0 !important;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.055) !important;
+}
+
+.pro-side-panel {
+  top: 64px !important;
+}
+
+.timeline.pro-timeline {
+  padding: 14px !important;
+  background: rgba(255, 255, 255, 0.88) !important;
+}
+
+/* 質問カードも少し締める */
+.side-panel-header h2,
+.quick-question-panel h2,
+.revision-panel h2 {
+  font-size: 20px !important;
+  letter-spacing: -0.025em !important;
+}
+
+.question-form textarea {
+  min-height: 112px !important;
+}
+
+.quick-question-panel,
+.revision-panel {
+  background: rgba(255, 255, 255, 0.72) !important;
+  border-color: #e6edf7 !important;
+}
+
+/* 回答側カードの見た目を少しだけ落ち着かせる */
+.bubble.user {
+  background: #f8fbff !important;
+  border-color: #dbeafe !important;
+}
+
+.answer-section {
+  border-radius: 16px !important;
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.04) !important;
+}
+
+/* すでに入れている回答欄スクロール解除は維持 */
+.timeline,
+.pro-timeline,
+.print-area {
+  max-height: none !important;
+  overflow: visible !important;
+}
+
+/* レスポンシブ */
+@media (max-width: 1100px) {
+  .dashboard-overview {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+
+  .chat-layout.pro-chat-layout {
+    grid-template-columns: 320px minmax(0, 1fr) !important;
+  }
+}
+
+@media (max-width: 900px) {
+  .top-header.pro-hero {
+    grid-template-columns: 1fr !important;
+    align-items: flex-start !important;
+  }
+
+  .top-header.pro-hero .hero-actions {
+    justify-content: flex-start !important;
+    flex-wrap: wrap !important;
+  }
+
+  .dashboard-overview {
+    grid-template-columns: 1fr !important;
+  }
+
+  .chat-layout.pro-chat-layout {
+    grid-template-columns: 1fr !important;
+  }
+
+  .pro-side-panel {
+    position: static !important;
+  }
+}
+
+@media (max-width: 640px) {
+  .app-shell.pro-shell {
+    padding: 12px 12px 24px !important;
+  }
+
+  .top-header.pro-hero {
+    padding: 16px !important;
+    border-radius: 18px !important;
+  }
+
+  .top-header.pro-hero .brand-row {
+    align-items: flex-start !important;
+  }
+
+  .top-header.pro-hero .brand-logo {
+    width: 44px !important;
+    height: 44px !important;
+  }
+
+  .top-header.pro-hero h1 {
+    font-size: 22px !important;
+  }
+
+  .top-header.pro-hero p {
+    font-size: 13px !important;
+  }
+
+  .pro-tab-row {
+    position: static !important;
+  }
+
+  .pro-tab-row button {
+    flex: 1 1 auto !important;
+    text-align: center !important;
+  }
+}
