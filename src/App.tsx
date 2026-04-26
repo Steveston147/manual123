@@ -130,6 +130,50 @@ const DEFAULT_MANAGER_GATE: ManagerGate = {
     "以下の件について、Notion上では〇〇と理解しました。\n先方へ回答する前に確認させてください。\nこの理解で進めてよろしいでしょうか。",
 };
 
+const QUICK_SAMPLE_QUESTIONS = [
+  "大型バスの発注方法を、見積依頼から請求書処理まで順番に教えてください。",
+  "参加対象外の学生から問い合わせが来た場合の対応を教えてください。",
+  "小学校訪問でアレルギー情報を確認するときの手順を教えてください。",
+  "契約書や支払期限に関する確認ポイントを教えてください。",
+];
+
+const LOGIN_FEATURES = [
+  {
+    title: "Notion検索",
+    text: "RSJPマニュアルDBから関連ページを探し、根拠付きで回答します。",
+    icon: "⌕",
+  },
+  {
+    title: "課長確認ゲート",
+    text: "新人が進めてよい作業と、確認が必要な判断を分けます。",
+    icon: "✓",
+  },
+  {
+    title: "手順化",
+    text: "長い業務説明を、作業順・チェックリスト・図解に整理します。",
+    icon: "▣",
+  },
+  {
+    title: "印刷対応",
+    text: "回答をそのまま新人説明・引き継ぎ資料として印刷できます。",
+    icon: "↧",
+  },
+];
+
+const LOGIN_STATS = [
+  { label: "Manual DB", value: "Notion" },
+  { label: "Safety", value: "Manager Gate" },
+  { label: "Output", value: "Answer + Steps" },
+];
+
+const WORKFLOW_STEPS = [
+  "質問する",
+  "Notionを検索",
+  "回答を整理",
+  "課長確認",
+  "作業実行",
+];
+
 type Settings = typeof DEFAULT_SETTINGS;
 
 type AskRequestPayload = {
@@ -597,6 +641,19 @@ function renderHeroCopy() {
   );
 }
 
+function renderWorkflowStrip() {
+  return (
+    <div className="workflow-strip">
+      {WORKFLOW_STEPS.map((step, index) => (
+        <div className="workflow-step" key={step}>
+          <span>{index + 1}</span>
+          <p>{step}</p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function renderManagerGate(managerGate?: ManagerGate) {
   const gate = managerGate ?? DEFAULT_MANAGER_GATE;
 
@@ -686,6 +743,19 @@ export default function App() {
     [messages]
   );
 
+  const assistantMessageCount = useMemo(
+    () => messages.filter((message) => message.role === "assistant" && message.payload).length,
+    [messages]
+  );
+
+  const latestQuestionText = useMemo(() => {
+    const latestQuestion = [...messages]
+      .reverse()
+      .find((message) => message.role === "user" && message.rawText);
+
+    return latestQuestion?.rawText ?? "まだ質問はありません。";
+  }, [messages]);
+
   useEffect(() => {
     const timer = window.setInterval(() => {
       setCurrentDateTime(new Date());
@@ -724,6 +794,11 @@ export default function App() {
     setEmail("demo@rsjp.local");
     setPassword("");
     setAuth({ email: "demo@rsjp.local", token: "local-demo-token" });
+  }
+
+  function applySampleQuestion(sample: string) {
+    setQuestion(sample);
+    setActiveTab("chat");
   }
 
   function printAnswer() {
@@ -1278,76 +1353,151 @@ export default function App() {
 
   if (!auth) {
     return (
-      <div className="app-shell">
-        <header className="top-header app-hero">
+      <div className="app-shell pro-shell">
+        <header className="top-header app-hero pro-hero">
           <div className="hero-copy">{renderHeroCopy()}</div>
 
           <div className="hero-actions">
-            <span className="status-pill">{formatHeaderDateTime(currentDateTime)}</span>
+            <span className="status-pill date-pill">{formatHeaderDateTime(currentDateTime)}</span>
           </div>
         </header>
 
-        <section className="left-panel login-panel">
-          <h2>ログイン</h2>
+        <main className="login-modern-layout">
+          <section className="product-panel">
+            <div className="product-kicker">Internal Operations Navigator</div>
 
-          <form onSubmit={login} className="question-form">
-            <label>
-              メールアドレス
-              <input
-                value={email}
-                onChange={(event) => setEmail(event.target.value)}
-                type="email"
-              />
-            </label>
+            <h2>新人が迷わず進め、危ない判断では止まれる業務ナビ。</h2>
 
-            <label>
-              パスワード
-              <input
-                value={password}
-                onChange={(event) => setPassword(event.target.value)}
-                type="password"
-              />
-            </label>
+            <p className="product-lead">
+              RSJP業務マニュアルAIは、Notion上の業務マニュアルをもとに、回答・手順・チェックリスト・課長確認ポイントを整理します。
+              文字だけのマニュアルを、実際に作業できる形へ変換します。
+            </p>
 
-            <button className="primary" type="submit" disabled={isLoggingIn}>
-              {isLoggingIn ? "ログイン中..." : "ログイン"}
-            </button>
+            <div className="product-badge-row">
+              <span>Notion Connected</span>
+              <span>Manager Gate</span>
+              <span>Beginner Friendly</span>
+              <span>Print Ready</span>
+            </div>
 
-            <button type="button" onClick={loginAsDemoUser}>
-              デモユーザーでログイン
-            </button>
+            {renderWorkflowStrip()}
 
-            {error && <p className="error">{error}</p>}
-          </form>
+            <div className="feature-grid">
+              {LOGIN_FEATURES.map((feature) => (
+                <article className="feature-card" key={feature.title}>
+                  <span className="feature-icon">{feature.icon}</span>
+                  <h3>{feature.title}</h3>
+                  <p>{feature.text}</p>
+                </article>
+              ))}
+            </div>
 
-          <p className="meta">
-            認証API未設定時はローカル開発モードとしてログインできます。
-          </p>
-
-          <section className="revision-panel">
-            <h2>次にやること</h2>
-
-            <ol>
-              <li>デモユーザーでログインして画面の動きを確認します。</li>
-              <li>運用設定でQ&A API URLを確認します。</li>
-              <li>NotionナレッジDB URLを確認します。</li>
-              <li>質問画面でテスト質問を送信します。</li>
-              <li>回答画面に課長確認ゲートが出るか確認します。</li>
-              <li>回答修正機能はRevision API設定後に確認します。</li>
-            </ol>
+            <div className="metric-row">
+              {LOGIN_STATS.map((item) => (
+                <div className="metric-card" key={item.label}>
+                  <p>{item.label}</p>
+                  <strong>{item.value}</strong>
+                </div>
+              ))}
+            </div>
           </section>
-        </section>
+
+          <section className="login-stack">
+            <section className="login-panel pro-login-card">
+              <div className="login-card-header">
+                <div>
+                  <p className="mini-label">Secure access</p>
+                  <h2>ログイン</h2>
+                </div>
+                <span className="login-card-status">Demo ready</span>
+              </div>
+
+              <form onSubmit={login} className="question-form">
+                <label>
+                  メールアドレス
+                  <input
+                    value={email}
+                    onChange={(event) => setEmail(event.target.value)}
+                    type="email"
+                    placeholder="name@example.com"
+                  />
+                </label>
+
+                <label>
+                  パスワード
+                  <input
+                    value={password}
+                    onChange={(event) => setPassword(event.target.value)}
+                    type="password"
+                    placeholder="パスワードを入力"
+                  />
+                </label>
+
+                <button className="primary" type="submit" disabled={isLoggingIn}>
+                  {isLoggingIn ? "ログイン中..." : "ログイン"}
+                </button>
+
+                <button className="demo-login-button" type="button" onClick={loginAsDemoUser}>
+                  デモユーザーでログイン
+                </button>
+
+                {error && <p className="error">{error}</p>}
+              </form>
+
+              <p className="meta login-help-text">
+                認証API未設定時はローカル開発モードとしてログインできます。
+              </p>
+            </section>
+
+            <section className="next-action-card">
+              <div className="section-heading-row">
+                <div>
+                  <p className="mini-label">Onboarding checklist</p>
+                  <h2>次にやること</h2>
+                </div>
+                <span className="section-badge">初回確認</span>
+              </div>
+
+              <ol className="next-action-list">
+                <li>
+                  <span>01</span>
+                  <p>デモユーザーでログインして画面の動きを確認します。</p>
+                </li>
+                <li>
+                  <span>02</span>
+                  <p>運用設定でQ&A API URLを確認します。</p>
+                </li>
+                <li>
+                  <span>03</span>
+                  <p>NotionナレッジDB URLを確認します。</p>
+                </li>
+                <li>
+                  <span>04</span>
+                  <p>質問画面でテスト質問を送信します。</p>
+                </li>
+                <li>
+                  <span>05</span>
+                  <p>回答画面に課長確認ゲートが出るか確認します。</p>
+                </li>
+                <li>
+                  <span>06</span>
+                  <p>回答修正機能はRevision API設定後に確認します。</p>
+                </li>
+              </ol>
+            </section>
+          </section>
+        </main>
       </div>
     );
   }
 
   return (
-    <div className="app-shell">
-      <header className="top-header app-hero no-print">
+    <div className="app-shell pro-shell">
+      <header className="top-header app-hero no-print pro-hero">
         <div className="hero-copy">{renderHeroCopy()}</div>
 
         <div className="hero-actions">
-          <span className="status-pill">{formatHeaderDateTime(currentDateTime)}</span>
+          <span className="status-pill date-pill">{formatHeaderDateTime(currentDateTime)}</span>
           <span className="status-pill">Ready</span>
           <button
             type="button"
@@ -1362,7 +1512,33 @@ export default function App() {
         </div>
       </header>
 
-      <nav className="tab-row no-print">
+      <section className="dashboard-overview no-print">
+        <article className="overview-card">
+          <p className="mini-label">回答履歴</p>
+          <strong>{assistantMessageCount}</strong>
+          <span>件の回答を保存中</span>
+        </article>
+
+        <article className="overview-card">
+          <p className="mini-label">接続先</p>
+          <strong>{settings.qaWebhookUrl || "未設定"}</strong>
+          <span>Q&A API</span>
+        </article>
+
+        <article className="overview-card">
+          <p className="mini-label">安全装置</p>
+          <strong>Manager Gate</strong>
+          <span>課長確認ポイントを表示</span>
+        </article>
+
+        <article className="overview-card overview-card-wide">
+          <p className="mini-label">直近の質問</p>
+          <strong>{latestQuestionText}</strong>
+          <span>履歴をクリアするとリセットされます</span>
+        </article>
+      </section>
+
+      <nav className="tab-row no-print pro-tab-row">
         <button
           className={activeTab === "chat" ? "active" : ""}
           onClick={() => setActiveTab("chat")}
@@ -1386,9 +1562,17 @@ export default function App() {
       </nav>
 
       {activeTab === "chat" && (
-        <section className="chat-layout">
-          <aside className="left-panel no-print">
+        <section className="chat-layout pro-chat-layout">
+          <aside className="left-panel no-print pro-side-panel">
             <form onSubmit={submitQuestion} className="question-form">
+              <div className="side-panel-header">
+                <div>
+                  <p className="mini-label">Ask manual AI</p>
+                  <h2>質問する</h2>
+                </div>
+                <span className="section-badge">Notion検索</span>
+              </div>
+
               <label htmlFor="question">質問</label>
 
               <textarea
@@ -1431,7 +1615,24 @@ export default function App() {
               {error && <p className="error">{error}</p>}
             </form>
 
-            <section className="revision-panel">
+            <section className="quick-question-panel">
+              <p className="mini-label">Sample prompts</p>
+              <h2>よく使う質問</h2>
+
+              <div className="quick-question-list">
+                {QUICK_SAMPLE_QUESTIONS.map((sample) => (
+                  <button
+                    type="button"
+                    key={sample}
+                    onClick={() => applySampleQuestion(sample)}
+                  >
+                    {sample}
+                  </button>
+                ))}
+              </div>
+            </section>
+
+            <section className="revision-panel pro-revision-panel">
               <h2>回答修正（Notion DBへ直接追記）</h2>
               <p>
                 最新回答を編集し、修正履歴をNotion Revision DBに保存します。
@@ -1482,13 +1683,26 @@ export default function App() {
             </section>
           </aside>
 
-          <main className="timeline print-area">
+          <main className="timeline print-area pro-timeline">
             {messages.length === 0 && (
-              <div className="empty-state">
+              <div className="empty-state pro-empty-state">
+                <p className="mini-label">Ready to start</p>
                 <h2>まずは業務を1つ質問してください</h2>
                 <p>
-                  例：大型バスの発注方法を、見積依頼から請求書処理まで順番に教えてください。
+                  質問すると、回答・課長確認ゲート・手順・チェックリスト・図解用プレビューをまとめて表示します。
                 </p>
+
+                <div className="empty-sample-grid no-print">
+                  {QUICK_SAMPLE_QUESTIONS.slice(0, 2).map((sample) => (
+                    <button
+                      type="button"
+                      key={sample}
+                      onClick={() => applySampleQuestion(sample)}
+                    >
+                      {sample}
+                    </button>
+                  ))}
+                </div>
               </div>
             )}
 
@@ -1511,8 +1725,14 @@ export default function App() {
       )}
 
       {activeTab === "ops" && (
-        <section className="ops-panel">
-          <h2>運用設定</h2>
+        <section className="ops-panel pro-ops-panel">
+          <div className="side-panel-header">
+            <div>
+              <p className="mini-label">System settings</p>
+              <h2>運用設定</h2>
+            </div>
+            <span className="section-badge">管理者向け</span>
+          </div>
 
           <label>
             認証 API URL（メール/パスワード認証）
@@ -1623,8 +1843,14 @@ export default function App() {
       )}
 
       {activeTab === "guide" && (
-        <section className="guide-panel">
-          <h2>使い方（新人向け）</h2>
+        <section className="guide-panel pro-guide-panel">
+          <div className="side-panel-header">
+            <div>
+              <p className="mini-label">Beginner guide</p>
+              <h2>使い方（新人向け）</h2>
+            </div>
+            <span className="section-badge">初回説明用</span>
+          </div>
 
           <ol>
             <li>メール/パスワードでログインします。</li>
