@@ -9,6 +9,13 @@ type ChecklistItem = {
   done?: boolean;
 };
 
+type ManagerGate = {
+  canProceedAlone: string[];
+  needManagerApproval: string[];
+  approvalTiming: string[];
+  managerQuestionTemplate: string;
+};
+
 type SearchDebugPage = {
   title: string;
   score: number;
@@ -38,6 +45,7 @@ type AnswerPayload = {
   references?: string[];
   updatedAt?: string;
   oldPolicyNote?: string;
+  managerGate?: ManagerGate;
   debug?: {
     search?: SearchDebug;
   };
@@ -94,6 +102,34 @@ const DEFAULT_SETTINGS = {
   imageModel: "gpt-image-1",
 };
 
+const DEFAULT_MANAGER_GATE: ManagerGate = {
+  canProceedAlone: [
+    "Notionに明記された手順を確認する",
+    "事実関係を整理する",
+    "必要情報を洗い出す",
+    "既存テンプレートに沿って下書きを作成する",
+    "参照元とチェックリストを確認する",
+    "課長確認用のメモを作成する",
+  ],
+  needManagerApproval: [
+    "費用、見積、請求、支払方法、支払期限、キャンセル料に関わる判断",
+    "契約、合意書、受入可否、参加対象外への案内に関わる判断",
+    "学内ルールに明記されていない例外対応",
+    "先方へ確約する内容や、相手機関との交渉に関わる内容",
+    "過去対応と異なる判断、部署間調整、トラブル・クレーム対応",
+    "個人情報、アレルギー、医療情報など慎重な取扱いが必要な情報",
+  ],
+  approvalTiming: [
+    "先方へメールや回答を送る前",
+    "金額、日程、受入可否、支払条件などを確定する前",
+    "通常ルールから外れる可能性があるとき",
+    "Notion上の記載だけでは判断できないとき",
+    "自分で判断してよいか少しでも迷ったとき",
+  ],
+  managerQuestionTemplate:
+    "以下の件について、Notion上では〇〇と理解しました。\n先方へ回答する前に確認させてください。\nこの理解で進めてよろしいでしょうか。",
+};
+
 type Settings = typeof DEFAULT_SETTINGS;
 
 type AskRequestPayload = {
@@ -106,6 +142,7 @@ type AskRequestPayload = {
   };
   outputFormat: {
     answer: string;
+    managerGate: string;
     steps: string;
     checklist: string;
     imagePrompt: string;
@@ -121,6 +158,7 @@ type AskRequestPayload = {
   policy: {
     beginnerFriendly: boolean;
     avoidPersonalDependency: boolean;
+    includeManagerApprovalGate: boolean;
   };
 };
 
@@ -164,6 +202,43 @@ function stripListPrefixForUi(value: string) {
   return value
     .replace(/^\s*(\d+[\.)]|[０-９]+[．.)）]|[①②③④⑤⑥⑦⑧⑨⑩]|[-・●■])\s*/g, "")
     .trim();
+}
+
+function normalizeStringArray(value: unknown, fallback: string[]) {
+  if (!Array.isArray(value)) return fallback;
+
+  const normalized = value
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+  return normalized.length > 0 ? normalized : fallback;
+}
+
+function normalizeManagerGate(value: unknown): ManagerGate {
+  if (!value || typeof value !== "object") return DEFAULT_MANAGER_GATE;
+
+  const data = value as Partial<ManagerGate>;
+
+  return {
+    canProceedAlone: normalizeStringArray(
+      data.canProceedAlone,
+      DEFAULT_MANAGER_GATE.canProceedAlone
+    ),
+    needManagerApproval: normalizeStringArray(
+      data.needManagerApproval,
+      DEFAULT_MANAGER_GATE.needManagerApproval
+    ),
+    approvalTiming: normalizeStringArray(
+      data.approvalTiming,
+      DEFAULT_MANAGER_GATE.approvalTiming
+    ),
+    managerQuestionTemplate:
+      typeof data.managerQuestionTemplate === "string" &&
+      data.managerQuestionTemplate.trim()
+        ? data.managerQuestionTemplate.trim()
+        : DEFAULT_MANAGER_GATE.managerQuestionTemplate,
+  };
 }
 
 function makeSlideLabel(value: string, index: number) {
@@ -247,6 +322,8 @@ function buildAskRequest(
     },
     outputFormat: {
       answer: "string",
+      managerGate:
+        "{canProceedAlone:string[], needManagerApproval:string[], approvalTiming:string[], managerQuestionTemplate:string}",
       steps: "string[]",
       checklist: "{text,done?}[]",
       imagePrompt: "string",
@@ -262,6 +339,7 @@ function buildAskRequest(
     policy: {
       beginnerFriendly: true,
       avoidPersonalDependency: true,
+      includeManagerApprovalGate: true,
     },
   };
 }
@@ -279,6 +357,25 @@ ${requestBody.question}
 
 この表示が出ていれば、フロント側の流れは成功です。
 次の段階で、Vercel Functions の /api/ask と接続します。`,
+    managerGate: {
+      canProceedAlone: [
+        "運用設定の内容を確認する",
+        "質問内容と回答内容を読み比べる",
+        "手順とチェックリストに沿って、作業メモを作成する",
+      ],
+      needManagerApproval: [
+        "先方へ正式な回答を送る場合",
+        "費用、契約、支払期限、キャンセル料に関わる場合",
+        "Notionに明記されていない例外対応を判断する場合",
+      ],
+      approvalTiming: [
+        "先方へメールを送る前",
+        "金額や日程などを確定する前",
+        "自分だけで判断してよいか迷ったとき",
+      ],
+      managerQuestionTemplate:
+        "以下の件について、Notion上では〇〇と理解しました。\n先方へ回答する前に確認させてください。\nこの理解で進めてよろしいでしょうか。",
+    },
     steps: [
       "運用設定でQ&A API URLが /api/ask になっていることを確認する",
       "質問画面でテスト質問を送信する",
@@ -288,6 +385,7 @@ ${requestBody.question}
     checklist: [
       { text: "Q&A API URLが /api/ask になっている" },
       { text: "HTTP 404ではなくテスト回答が表示された" },
+      { text: "画面に課長確認ゲートが表示された" },
       { text: "画面に手順とチェックリストが表示された" },
     ],
     imagePrompt:
@@ -317,10 +415,12 @@ function assistantFromRaw(question: string, raw: unknown): AnswerPayload {
   if (typeof raw === "string") {
     return {
       answer: raw,
+      managerGate: DEFAULT_MANAGER_GATE,
       steps: ["回答本文を確認し、不足部分を追質問してください。"],
       checklist: [
         { text: "回答に具体的な作業手順がある" },
         { text: "担当者依存の表現がない" },
+        { text: "先方へ送る前に課長確認が必要な点を確認した" },
       ],
       imagePrompt:
         "Background image only. No text, no letters, no numbers, no labels. Friendly flat illustration for an administrative workflow manual.",
@@ -338,6 +438,7 @@ function assistantFromRaw(question: string, raw: unknown): AnswerPayload {
       anyData.answer ??
       anyData.text ??
       `「${question}」への回答データが不足していたため、再実行してください。`,
+    managerGate: normalizeManagerGate(anyData.managerGate),
     steps:
       anyData.steps && anyData.steps.length > 0
         ? anyData.steps
@@ -349,7 +450,11 @@ function assistantFromRaw(question: string, raw: unknown): AnswerPayload {
     checklist:
       anyData.checklist && anyData.checklist.length > 0
         ? anyData.checklist
-        : [{ text: "対象手順を最後まで実施した" }, { text: "記録を保存した" }],
+        : [
+            { text: "対象手順を最後まで実施した" },
+            { text: "記録を保存した" },
+            { text: "課長確認が必要な内容を送信前に確認した" },
+          ],
     imagePrompt:
       anyData.imagePrompt ??
       "Background image only. No text, no letters, no numbers, no labels. Friendly flat illustration for an administrative workflow manual.",
@@ -473,6 +578,58 @@ function renderHeroCopy() {
         <p>Notionナレッジを参照し、回答・手順・チェックリストを整理します。</p>
       </div>
     </div>
+  );
+}
+
+function renderManagerGate(managerGate?: ManagerGate) {
+  const gate = managerGate ?? DEFAULT_MANAGER_GATE;
+
+  return (
+    <section className="answer-section manager-gate-card">
+      <div className="section-heading-row">
+        <div>
+          <h4>課長確認ゲート</h4>
+          <p className="manager-gate-lead">
+            新人が自分で進めてよい作業と、先方へ回答する前に課長確認が必要な判断を分けて確認します。
+          </p>
+        </div>
+        <span className="section-badge manager-badge">安全確認</span>
+      </div>
+
+      <div className="manager-gate-grid">
+        <div className="manager-gate-column manager-gate-ok">
+          <p className="mini-label">自分で進めてよいこと</p>
+          <ul>
+            {gate.canProceedAlone.map((item, index) => (
+              <li key={`alone-${item}-${index}`}>{item}</li>
+            ))}
+          </ul>
+        </div>
+
+        <div className="manager-gate-column manager-gate-warning">
+          <p className="mini-label">課長確認が必要なこと</p>
+          <ul>
+            {gate.needManagerApproval.map((item, index) => (
+              <li key={`approval-${item}-${index}`}>{item}</li>
+            ))}
+          </ul>
+        </div>
+
+        <div className="manager-gate-column manager-gate-timing">
+          <p className="mini-label">確認するタイミング</p>
+          <ul>
+            {gate.approvalTiming.map((item, index) => (
+              <li key={`timing-${item}-${index}`}>{item}</li>
+            ))}
+          </ul>
+        </div>
+      </div>
+
+      <div className="manager-template-box">
+        <p className="mini-label">課長への確認文例</p>
+        <p>{gate.managerQuestionTemplate}</p>
+      </div>
+    </section>
   );
 }
 
@@ -625,6 +782,7 @@ export default function App() {
         steps: [],
         checklist: [],
         imagePrompt: "",
+        managerGate: DEFAULT_MANAGER_GATE,
       },
       createdAt: nowIso(),
     };
@@ -686,13 +844,17 @@ export default function App() {
                 payload: {
                   answer:
                     "回答取得に失敗しました。送信先URL、API実行状態、またはCORS設定を確認してください。",
+                  managerGate: DEFAULT_MANAGER_GATE,
                   steps: [
                     "運用設定のQ&A API URLを確認する",
                     "開発中は /api/ask を指定する",
                     "Vercelデプロイ後は /api/ask の本物のAPIが動くか確認する",
                     "再度同じ質問で実行する",
                   ],
-                  checklist: [{ text: "接続設定を確認した" }],
+                  checklist: [
+                    { text: "接続設定を確認した" },
+                    { text: "先方へ回答する前に課長確認が必要な内容を確認した" },
+                  ],
                   imagePrompt: "",
                 },
               }
@@ -940,6 +1102,8 @@ export default function App() {
           <p className="answer-text">{payload.answer}</p>
         </section>
 
+        {renderManagerGate(payload.managerGate)}
+
         <section className="answer-section">
           <div className="section-heading-row">
             <h4>手順（この順番で実施）</h4>
@@ -1139,6 +1303,7 @@ export default function App() {
               <li>運用設定でQ&A API URLを確認します。</li>
               <li>NotionナレッジDB URLを確認します。</li>
               <li>質問画面でテスト質問を送信します。</li>
+              <li>回答画面に課長確認ゲートが出るか確認します。</li>
               <li>回答修正機能はRevision API設定後に確認します。</li>
             </ol>
           </section>
@@ -1434,6 +1599,8 @@ export default function App() {
           <ol>
             <li>メール/パスワードでログインします。</li>
             <li>「質問画面」で業務内容を1つだけ入力します。</li>
+            <li>回答を読み、まず「課長確認ゲート」で自分で進めてよい範囲を確認します。</li>
+            <li>先方へ送る前、金額・日程・受入可否を確定する前は、必要に応じて課長確認をします。</li>
             <li>回答に表示された「手順」を上から順番に実施します。</li>
             <li>作業後に「チェックリスト」で抜け漏れを確認します。</li>
             <li>必要に応じて回答修正を保存し、Notion Revision DBへ反映します。</li>
@@ -1443,6 +1610,8 @@ export default function App() {
 
           <ul>
             <li>NotionはAPI連携で取得（スクレイピング前提にしない）。</li>
+            <li>新人が単独で進めてよい作業と、課長確認が必要な判断を分けて表示する。</li>
+            <li>費用・契約・受入可否・例外対応・個人情報などは、先方回答前の確認対象にする。</li>
             <li>画像生成AIには文字を描かせず、背景画像だけを生成する。</li>
             <li>正確な日本語ラベル・手順・注意点はHTML/CSSで表示する。</li>
             <li>印刷時は操作ボタンや開発用情報を非表示にし、回答本文を中心に出力する。</li>
