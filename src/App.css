@@ -438,6 +438,101 @@ button.primary {
   margin: 0;
 }
 
+.manager-gate-card {
+  background:
+    linear-gradient(135deg, rgba(255, 251, 235, 0.98), rgba(255, 247, 237, 0.95)),
+    #fffbeb;
+  border-color: #fde68a;
+  box-shadow: 0 10px 22px rgba(245, 158, 11, 0.08);
+}
+
+.manager-gate-card h4 {
+  color: #78350f;
+}
+
+.manager-gate-lead {
+  margin: 5px 0 0;
+  color: #7c2d12;
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.manager-badge {
+  background: #fef3c7;
+  border-color: #fbbf24;
+  color: #92400e;
+}
+
+.manager-gate-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.manager-gate-column {
+  border-radius: 14px;
+  padding: 12px;
+  border: 1px solid #e2e8f0;
+  background: #ffffff;
+  min-width: 0;
+}
+
+.manager-gate-column ul {
+  margin: 0;
+  padding-left: 18px;
+  color: #172033;
+  line-height: 1.65;
+}
+
+.manager-gate-column li {
+  margin-bottom: 6px;
+  overflow-wrap: anywhere;
+}
+
+.manager-gate-ok {
+  background: #eff6ff;
+  border-color: #bfdbfe;
+}
+
+.manager-gate-ok .mini-label {
+  color: #1d4ed8;
+}
+
+.manager-gate-warning {
+  background: #fff7ed;
+  border-color: #fed7aa;
+}
+
+.manager-gate-warning .mini-label {
+  color: #c2410c;
+}
+
+.manager-gate-timing {
+  background: #f8fafc;
+  border-color: #cbd5e1;
+}
+
+.manager-gate-timing .mini-label {
+  color: #334155;
+}
+
+.manager-template-box {
+  margin-top: 12px;
+  border-radius: 14px;
+  padding: 12px;
+  background: #ffffff;
+  border: 1px solid #fbbf24;
+  box-shadow: inset 4px 0 0 #f59e0b;
+}
+
+.manager-template-box p:last-child {
+  margin: 0;
+  color: #172033;
+  line-height: 1.75;
+  white-space: pre-wrap;
+}
+
 .step-list {
   padding-left: 24px;
   margin: 0;
@@ -1151,6 +1246,9 @@ button.primary {
 
   .bubble,
   .answer-section,
+  .manager-gate-card,
+  .manager-gate-column,
+  .manager-template-box,
   .slide-preview-card,
   .slide-detail-item,
   .slide-note-box {
@@ -1170,9 +1268,19 @@ button.primary {
     padding: 10px !important;
   }
 
+  .manager-gate-grid {
+    grid-template-columns: 1fr !important;
+  }
+
   .generated-image {
     max-height: 180px;
     object-fit: contain;
+  }
+}
+
+@media (max-width: 1100px) {
+  .manager-gate-grid {
+    grid-template-columns: 1fr;
   }
 }
 
@@ -1232,6 +1340,18 @@ button.primary {
 
   .section-badge {
     width: fit-content;
+  }
+
+  .manager-gate-card {
+    padding: 12px;
+  }
+
+  .manager-gate-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .manager-gate-column {
+    padding: 11px;
   }
 
   .slide-flow-row {
