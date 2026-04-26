@@ -22,6 +22,8 @@ type SearchDebugPage = {
   url?: string;
   lastEditedTime?: string;
   contentPreview: string;
+  sourceName?: string;
+  sourceType?: string;
 };
 
 type SearchDebug = {
@@ -34,6 +36,7 @@ type SearchDebug = {
   maxScore: number;
   minimumScore: number;
   selectedPages: SearchDebugPage[];
+  sourceCounts?: Record<string, number>;
 };
 
 type AnswerPayload = {
@@ -466,6 +469,9 @@ ${requestBody.question}
         maxScore: 0,
         minimumScore: 0,
         selectedPages: [],
+        sourceCounts: {
+          "Local Mock": 0,
+        },
       },
     },
   };
@@ -550,6 +556,22 @@ function renderSearchDebug(debug?: SearchDebug) {
         </section>
 
         <section className="debug-section">
+          <h4>ナレッジベース別件数</h4>
+
+          {debug.sourceCounts && Object.keys(debug.sourceCounts).length > 0 ? (
+            <div className="debug-grid">
+              {Object.entries(debug.sourceCounts).map(([sourceName, count]) => (
+                <p className="meta" key={sourceName}>
+                  {sourceName}: {count}
+                </p>
+              ))}
+            </div>
+          ) : (
+            <p className="meta">ナレッジベース別件数は未取得です。</p>
+          )}
+        </section>
+
+        <section className="debug-section">
           <h4>検索語</h4>
 
           {debug.searchTerms.length > 0 ? (
@@ -592,6 +614,8 @@ function renderSearchDebug(debug?: SearchDebug) {
 
                   <p className="meta">
                     score: {page.score}
+                    {page.sourceName ? ` / KB: ${page.sourceName}` : ""}
+                    {page.sourceType ? ` / 種別: ${page.sourceType}` : ""}
                     {page.lastEditedTime
                       ? ` / 更新: ${formatDateTime(page.lastEditedTime)}`
                       : ""}
