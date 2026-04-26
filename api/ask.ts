@@ -138,6 +138,47 @@ const MAX_CHILD_DATABASE_PAGES = 45;
 const MAX_RECURSION_DEPTH = 4;
 const MAX_NESTED_BLOCK_DEPTH = 3;
 
+const ELIGIBILITY_TERMS = [
+  "参加対象外",
+  "対象外",
+  "対象者",
+  "対象学生",
+  "対象条件",
+  "参加条件",
+  "参加資格",
+  "応募資格",
+  "申込資格",
+  "受入可否",
+  "受け入れ可否",
+  "受入れ可否",
+  "参加可否",
+  "受入対象",
+  "受け入れ対象",
+  "対象プログラム",
+  "対象学年",
+  "高校生",
+  "大学生",
+  "大学院生",
+  "学部生",
+  "既卒",
+  "社会人",
+  "問い合わせ",
+  "問合せ",
+  "案内",
+  "例外",
+  "例外対応",
+  "eligibility",
+  "eligible",
+  "ineligible",
+  "not eligible",
+  "qualification",
+  "requirements",
+  "applicant",
+  "applicants",
+  "target student",
+  "target students",
+];
+
 const DEFAULT_MANAGER_GATE: ManagerGate = {
   canProceedAlone: [
     "Notionに明記された手順を確認する",
@@ -369,6 +410,22 @@ function normalizeTextForSearch(value: string): string {
     .trim();
 }
 
+function questionHasAny(question: string, terms: string[]): boolean {
+  const rawQuestion = question.toLowerCase();
+  const normalizedQuestion = normalizeTextForSearch(question);
+
+  return terms.some((term) => {
+    const rawTerm = term.toLowerCase();
+    const normalizedTerm = normalizeTextForSearch(term);
+
+    return rawQuestion.includes(rawTerm) || normalizedQuestion.includes(normalizedTerm);
+  });
+}
+
+function isEligibilityQuestion(question: string): boolean {
+  return questionHasAny(question, ELIGIBILITY_TERMS);
+}
+
 function buildSearchTerms(question: string): string[] {
   const cleaned = normalizeTextForSearch(question);
 
@@ -465,6 +522,7 @@ function buildSearchTerms(question: string): string[] {
     "修了証",
     "緊急",
     "トラブル",
+    ...ELIGIBILITY_TERMS,
   ];
 
   const expandedTerms: string[] = [];
@@ -557,7 +615,47 @@ function buildSearchTerms(question: string): string[] {
     expandedTerms.push("保険", "ビザ", "査証", "参加者", "書類", "申請");
   }
 
-  const matchedTerms = domainTerms.filter((term) => question.includes(term));
+  if (isEligibilityQuestion(question)) {
+    expandedTerms.push(
+      "参加対象外",
+      "対象外",
+      "対象者",
+      "対象学生",
+      "対象条件",
+      "参加条件",
+      "参加資格",
+      "応募資格",
+      "申込資格",
+      "受入可否",
+      "受け入れ可否",
+      "受入れ可否",
+      "参加可否",
+      "受入対象",
+      "受け入れ対象",
+      "高校生",
+      "大学生",
+      "大学院生",
+      "学部生",
+      "既卒",
+      "社会人",
+      "問い合わせ",
+      "問合せ",
+      "案内",
+      "例外",
+      "例外対応",
+      "eligibility",
+      "eligible",
+      "ineligible",
+      "not eligible",
+      "qualification",
+      "requirements",
+      "applicant",
+      "target student",
+      "target students"
+    );
+  }
+
+  const matchedTerms = domainTerms.filter((term) => questionHasAny(question, [term]));
 
   return Array.from(new Set([...matchedTerms, ...expandedTerms, ...roughTerms])).filter(
     (term) => term.length >= 2
@@ -610,11 +708,28 @@ function buildSearchQueries(question: string, terms: string[]): string[] {
     queries.push("空港", "送迎", "集合", "到着", "出発");
   }
 
-  queries.push(...terms.slice(0, 10));
+  if (isEligibilityQuestion(question)) {
+    queries.push(
+      "参加対象外 対応",
+      "参加対象外 学生 問い合わせ",
+      "対象外 問い合わせ",
+      "参加資格 対象学生",
+      "応募資格 受入可否",
+      "申込資格 参加条件",
+      "受入可否 対象者",
+      "対象学生 参加条件",
+      "高校生 対象外",
+      "大学生 大学院生 対象",
+      "eligibility eligible ineligible",
+      "not eligible student inquiry"
+    );
+  }
+
+  queries.push(...terms.slice(0, 14));
 
   return Array.from(new Set(queries.map((query) => query.trim()).filter(Boolean))).slice(
     0,
-    12
+    18
   );
 }
 
@@ -623,6 +738,7 @@ function scorePage(question: string, page: NotionContextPage): number {
   const title = normalizeTextForSearch(page.title);
   const content = normalizeTextForSearch(page.content);
   const q = normalizeTextForSearch(question);
+  const eligibilityQuestion = isEligibilityQuestion(question);
 
   let score = 0;
 
@@ -670,8 +786,66 @@ function scorePage(question: string, page: NotionContextPage): number {
   if (question.includes("バス") && content.includes("発注")) score += 10;
   if (question.includes("発注") && content.includes("coupa")) score += 10;
 
+  if (eligibilityQuestion) {
+    const eligibilityBoostTerms = [
+      "参加対象外",
+      "対象外",
+      "対象者",
+      "対象学生",
+      "対象条件",
+      "参加条件",
+      "参加資格",
+      "応募資格",
+      "申込資格",
+      "受入可否",
+      "受け入れ可否",
+      "受入れ可否",
+      "参加可否",
+      "受入対象",
+      "受け入れ対象",
+      "高校生",
+      "大学生",
+      "大学院生",
+      "学部生",
+      "問い合わせ",
+      "問合せ",
+      "案内",
+      "例外",
+      "例外対応",
+      "eligibility",
+      "eligible",
+      "ineligible",
+      "not eligible",
+      "qualification",
+      "requirements",
+      "applicant",
+      "target student",
+    ];
+
+    for (const term of eligibilityBoostTerms) {
+      const t = normalizeTextForSearch(term);
+
+      if (!t) continue;
+
+      if (title.includes(t)) score += 26;
+      if (content.includes(t)) score += 8;
+    }
+
+    if (title.includes("qa") || title.includes("q&a") || page.sourceName.toLowerCase().includes("qa")) {
+      score += 10;
+    }
+
+    if (
+      page.sourceName.toLowerCase().includes("general") ||
+      page.sourceName.toLowerCase().includes("shortterm") ||
+      page.sourceName.includes("QA")
+    ) {
+      score += 6;
+    }
+  }
+
   if (page.sourceName.includes("RSJP")) {
-    score += 2;
+    score += 1;
   }
 
   const genericTitles = ["はじめに", "緊急連絡先", "ホーム", "目次", "使ってみる"];
@@ -1258,25 +1432,38 @@ async function searchNotionPages(query: string): Promise<NotionPage[]> {
 }
 
 async function getInitialNotionSeedPages(sources: NotionSourceConfig[]): Promise<NotionSeedPage[]> {
-  const seeds: NotionSeedPage[] = [];
+  const seedGroups: NotionSeedPage[][] = [];
 
   for (const source of sources) {
     if (source.type === "database") {
       const databasePages = await getDatabasePagesById(source.id, MAX_DATABASE_PAGES);
 
-      for (const page of databasePages) {
-        seeds.push({ page, source });
-      }
+      seedGroups.push(databasePages.map((page) => ({ page, source })));
     } else if (source.type === "page") {
       const rootPage = await retrievePage(source.id);
 
       if (rootPage) {
-        seeds.push({ page: rootPage, source });
+        seedGroups.push([{ page: rootPage, source }]);
+      } else {
+        seedGroups.push([]);
       }
     }
   }
 
-  return seeds;
+  const maxLength = Math.max(0, ...seedGroups.map((group) => group.length));
+  const interleavedSeeds: NotionSeedPage[] = [];
+
+  for (let index = 0; index < maxLength; index += 1) {
+    for (const group of seedGroups) {
+      const seed = group[index];
+
+      if (seed) {
+        interleavedSeeds.push(seed);
+      }
+    }
+  }
+
+  return interleavedSeeds;
 }
 
 async function collectPageCandidate(
@@ -1516,6 +1703,8 @@ ${contextText}
 - Notionマニュアル情報に書かれている内容を最優先する
 - 複数のNotionナレッジベースに情報がある場合は、どのナレッジベースの情報かを意識して整理する
 - RSJP固有の内容はRSJP Manualを優先し、共通ルールや一般手順はGeneral Manualなどの一般ナレッジも参考にする
+- 参加対象外、応募資格、参加資格、受入可否、対象学生、eligibility などに関わる質問では、該当ページの根拠がない限り、受入可否を断定しない
+- 参加対象外の学生への案内や例外対応は、原則として課長確認が必要な判断として扱う
 - 複数のNotion情報に矛盾や古い可能性がある場合は断定せず、課長確認または担当部署確認に寄せる
 - Notionマニュアル情報に書かれていない内容は、推測で断定しない
 - 情報が不足している場合は「Notion上では確認できませんでした」と明記する
