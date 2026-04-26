@@ -1804,3 +1804,33 @@ button.primary {
     transform: translateX(260%);
   }
 }
+/* FILE: src/App.css */
+/* PATH: src/App.css */
+
+/* 回答コラム内の独立スクロールバーをなくし、ページ全体でスクロールする */
+.timeline,
+.pro-timeline {
+  max-height: none !important;
+  overflow: visible !important;
+}
+
+/* 回答エリアの高さ制限を解除 */
+.print-area {
+  max-height: none !important;
+  overflow: visible !important;
+}
+
+/* 左側の質問パネルだけ固定しすぎると違和感が出る場合の調整 */
+.pro-side-panel {
+  align-self: start;
+}
+
+/* スマホ・小さめ画面でも自然に縦に流れるようにする */
+@media (max-width: 960px) {
+  .timeline,
+  .pro-timeline,
+  .print-area {
+    max-height: none !important;
+    overflow: visible !important;
+  }
+}
