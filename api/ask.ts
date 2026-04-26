@@ -38,6 +38,8 @@ type SearchDebugPage = {
   url?: string;
   lastEditedTime?: string;
   contentPreview: string;
+  sourceName: string;
+  sourceType: string;
 };
 
 type SearchDebug = {
@@ -50,6 +52,7 @@ type SearchDebug = {
   maxScore: number;
   minimumScore: number;
   selectedPages: SearchDebugPage[];
+  sourceCounts: Record<string, number>;
 };
 
 type AnswerPayload = {
@@ -95,6 +98,18 @@ type ChildDatabaseRef = {
   title: string;
 };
 
+type NotionSourceConfig = {
+  id: string;
+  name: string;
+  type: "database" | "page" | "search";
+};
+
+type NotionSeedPage = {
+  page: NotionPage;
+  source: NotionSourceConfig;
+  parentPath?: string;
+};
+
 type NotionContextPage = {
   id: string;
   title: string;
@@ -102,6 +117,9 @@ type NotionContextPage = {
   lastEditedTime?: string;
   content: string;
   score: number;
+  sourceName: string;
+  sourceId: string;
+  sourceType: "database" | "page" | "search";
 };
 
 type NotionContextResult = {
@@ -179,6 +197,77 @@ function getQuestion(body: AskRequestBody): string {
   }
 
   return question;
+}
+
+function cleanNotionId(value: string | undefined): string {
+  const cleaned = (value ?? "")
+    .trim()
+    .replace(/-/g, "")
+    .replace(/^https?:\/\/www\.notion\.so\//, "")
+    .split("?")[0]
+    .split("/")
+    .filter(Boolean)
+    .pop();
+
+  return cleaned?.slice(0, 32) ?? "";
+}
+
+function getConfiguredNotionSources(): NotionSourceConfig[] {
+  const sources: NotionSourceConfig[] = [];
+
+  const primaryDatabaseId = cleanNotionId(process.env.NOTION_DATABASE_ID);
+  const secondaryDatabaseId = cleanNotionId(process.env.NOTION_DATABASE_ID_2);
+  const thirdDatabaseId = cleanNotionId(process.env.NOTION_DATABASE_ID_3);
+  const primaryRootPageId = cleanNotionId(process.env.NOTION_ROOT_PAGE_ID);
+  const secondaryRootPageId = cleanNotionId(process.env.NOTION_ROOT_PAGE_ID_2);
+
+  if (primaryDatabaseId) {
+    sources.push({
+      id: primaryDatabaseId,
+      name: process.env.NOTION_DATABASE_NAME || "RSJP Manual",
+      type: "database",
+    });
+  }
+
+  if (secondaryDatabaseId) {
+    sources.push({
+      id: secondaryDatabaseId,
+      name: process.env.NOTION_DATABASE_NAME_2 || "General Manual",
+      type: "database",
+    });
+  }
+
+  if (thirdDatabaseId) {
+    sources.push({
+      id: thirdDatabaseId,
+      name: process.env.NOTION_DATABASE_NAME_3 || "Additional Manual",
+      type: "database",
+    });
+  }
+
+  if (primaryRootPageId) {
+    sources.push({
+      id: primaryRootPageId,
+      name: process.env.NOTION_ROOT_PAGE_NAME || "Root Page Manual",
+      type: "page",
+    });
+  }
+
+  if (secondaryRootPageId) {
+    sources.push({
+      id: secondaryRootPageId,
+      name: process.env.NOTION_ROOT_PAGE_NAME_2 || "Additional Root Page",
+      type: "page",
+    });
+  }
+
+  const deduped = new Map<string, NotionSourceConfig>();
+
+  for (const source of sources) {
+    deduped.set(`${source.type}:${source.id}`, source);
+  }
+
+  return Array.from(deduped.values());
 }
 
 function extractPlainText(items: any[] | undefined): string {
@@ -576,24 +665,13 @@ function scorePage(question: string, page: NotionContextPage): number {
     }
   }
 
-  if (question.includes("バス") && title.includes("経理")) {
-    score += 10;
-  }
+  if (question.includes("バス") && content.includes("バス")) score += 14;
+  if (question.includes("バス") && content.includes("見積")) score += 10;
+  if (question.includes("バス") && content.includes("発注")) score += 10;
+  if (question.includes("発注") && content.includes("coupa")) score += 10;
 
-  if (question.includes("バス") && content.includes("バス")) {
-    score += 14;
-  }
-
-  if (question.includes("バス") && content.includes("見積")) {
-    score += 10;
-  }
-
-  if (question.includes("バス") && content.includes("発注")) {
-    score += 10;
-  }
-
-  if (question.includes("発注") && content.includes("coupa")) {
-    score += 10;
+  if (page.sourceName.includes("RSJP")) {
+    score += 2;
   }
 
   const genericTitles = ["はじめに", "緊急連絡先", "ホーム", "目次", "使ってみる"];
@@ -646,6 +724,7 @@ function createEmptyDebug(): SearchDebug {
     maxScore: 0,
     minimumScore: 0,
     selectedPages: [],
+    sourceCounts: {},
   };
 }
 
@@ -659,6 +738,11 @@ function createSearchDebug(
   maxScore: number,
   minimumScore: number
 ): SearchDebug {
+  const sourceCounts = discoveredPages.reduce<Record<string, number>>((counts, page) => {
+    counts[page.sourceName] = (counts[page.sourceName] ?? 0) + 1;
+    return counts;
+  }, {});
+
   return {
     searchTerms,
     searchQueries,
@@ -669,12 +753,15 @@ function createSearchDebug(
     maxScore,
     minimumScore,
     selectedPages: selectedPages.map((page) => ({
-      title: page.title,
+      title: `${page.sourceName} > ${page.title}`,
       score: page.score,
       url: page.url,
       lastEditedTime: page.lastEditedTime,
       contentPreview: page.content.replace(/\s+/g, " ").slice(0, 220),
+      sourceName: page.sourceName,
+      sourceType: page.sourceType,
     })),
+    sourceCounts,
   };
 }
 
@@ -783,6 +870,7 @@ function fallbackPayload(message: string, debug?: SearchDebug): AnswerPayload {
   const fallbackSteps = [
     "VercelのEnvironment Variablesを確認する",
     "NOTION_API_KEY と NOTION_DATABASE_ID を確認する",
+    "必要に応じて NOTION_DATABASE_ID_2 を確認する",
     "Notion DBがRSJP Manual AIに共有されているか確認する",
     "api/ask.tsの内容を確認する",
     "GitHubへcommit / pushする",
@@ -793,6 +881,7 @@ function fallbackPayload(message: string, debug?: SearchDebug): AnswerPayload {
   const fallbackChecklist = [
     { text: "NOTION_API_KEYが設定されている" },
     { text: "NOTION_DATABASE_IDが設定されている" },
+    { text: "必要に応じて NOTION_DATABASE_ID_2 が設定されている" },
     { text: "Notion DBをIntegrationに共有している" },
     { text: "OPENAI_API_KEYが設定されている" },
     { text: "Vercelの最新デプロイが成功している" },
@@ -1134,16 +1223,6 @@ async function tryGetDatabasePagesById(databaseId: string, maxPages = MAX_CHILD_
   }
 }
 
-async function getDatabasePages(): Promise<NotionPage[]> {
-  const databaseId = process.env.NOTION_DATABASE_ID;
-
-  if (!databaseId) {
-    throw new Error("NOTION_DATABASE_ID is not set.");
-  }
-
-  return getDatabasePagesById(databaseId, MAX_DATABASE_PAGES);
-}
-
 async function searchNotionPages(query: string): Promise<NotionPage[]> {
   const trimmed = query.trim();
 
@@ -1178,12 +1257,35 @@ async function searchNotionPages(query: string): Promise<NotionPage[]> {
   return data.results ?? [];
 }
 
+async function getInitialNotionSeedPages(sources: NotionSourceConfig[]): Promise<NotionSeedPage[]> {
+  const seeds: NotionSeedPage[] = [];
+
+  for (const source of sources) {
+    if (source.type === "database") {
+      const databasePages = await getDatabasePagesById(source.id, MAX_DATABASE_PAGES);
+
+      for (const page of databasePages) {
+        seeds.push({ page, source });
+      }
+    } else if (source.type === "page") {
+      const rootPage = await retrievePage(source.id);
+
+      if (rootPage) {
+        seeds.push({ page: rootPage, source });
+      }
+    }
+  }
+
+  return seeds;
+}
+
 async function collectPageCandidate(
   page: NotionPage,
   depth: number,
   parentPath: string,
   seen: Set<string>,
-  output: NotionContextPage[]
+  output: NotionContextPage[],
+  source: NotionSourceConfig
 ): Promise<void> {
   if (output.length >= MAX_DISCOVERED_PAGES) return;
   if (seen.has(page.id)) return;
@@ -1202,6 +1304,9 @@ async function collectPageCandidate(
     lastEditedTime: page.last_edited_time,
     content,
     score: 0,
+    sourceName: source.name,
+    sourceId: source.id,
+    sourceType: source.type,
   });
 
   if (depth >= MAX_RECURSION_DEPTH) return;
@@ -1220,12 +1325,15 @@ async function collectPageCandidate(
         lastEditedTime: undefined,
         content: "",
         score: 0,
+        sourceName: source.name,
+        sourceId: source.id,
+        sourceType: source.type,
       });
       seen.add(childPage.id);
       continue;
     }
 
-    await collectPageCandidate(child, depth + 1, titlePath, seen, output);
+    await collectPageCandidate(child, depth + 1, titlePath, seen, output, source);
   }
 
   for (const childDatabase of childDatabases.slice(0, 8)) {
@@ -1236,6 +1344,12 @@ async function collectPageCandidate(
       MAX_CHILD_DATABASE_PAGES
     );
 
+    const childDatabaseSource: NotionSourceConfig = {
+      id: childDatabase.id,
+      name: `${source.name} / ${childDatabase.title}`,
+      type: "database",
+    };
+
     for (const databasePage of databasePages) {
       if (output.length >= MAX_DISCOVERED_PAGES) break;
       await collectPageCandidate(
@@ -1243,7 +1357,8 @@ async function collectPageCandidate(
         depth + 1,
         `${titlePath} > ${childDatabase.title}`,
         seen,
-        output
+        output,
+        childDatabaseSource
       );
     }
   }
@@ -1252,29 +1367,52 @@ async function collectPageCandidate(
 async function getNotionContext(question: string): Promise<NotionContextResult> {
   const searchTerms = buildSearchTerms(question);
   const searchQueries = buildSearchQueries(question, searchTerms);
+  const sources = getConfiguredNotionSources();
 
-  const seedPageMap = new Map<string, NotionPage>();
+  if (sources.length === 0) {
+    throw new Error(
+      "NOTION_DATABASE_ID is not set. Add NOTION_DATABASE_ID and optional NOTION_DATABASE_ID_2 to Vercel Environment Variables."
+    );
+  }
 
-  const databasePages = await getDatabasePages();
+  const seedPageMap = new Map<string, NotionSeedPage>();
+  const initialSeedPages = await getInitialNotionSeedPages(sources);
 
-  for (const page of databasePages) {
-    seedPageMap.set(page.id, page);
+  for (const seed of initialSeedPages) {
+    seedPageMap.set(seed.page.id, seed);
   }
 
   for (const query of searchQueries) {
     const foundPages = await searchNotionPages(query);
 
     for (const page of foundPages) {
-      seedPageMap.set(page.id, page);
+      if (seedPageMap.has(page.id)) continue;
+
+      seedPageMap.set(page.id, {
+        page,
+        source: {
+          id: "notion-search",
+          name: "Notion Search",
+          type: "search",
+        },
+      });
     }
   }
 
   const seen = new Set<string>();
   const discoveredPages: NotionContextPage[] = [];
 
-  for (const page of Array.from(seedPageMap.values()).slice(0, MAX_SEED_PAGES)) {
+  for (const seed of Array.from(seedPageMap.values()).slice(0, MAX_SEED_PAGES)) {
     if (discoveredPages.length >= MAX_DISCOVERED_PAGES) break;
-    await collectPageCandidate(page, 0, "", seen, discoveredPages);
+
+    await collectPageCandidate(
+      seed.page,
+      0,
+      seed.parentPath ?? "",
+      seen,
+      discoveredPages,
+      seed.source
+    );
   }
 
   const scoredPages = discoveredPages
@@ -1300,7 +1438,7 @@ async function getNotionContext(question: string): Promise<NotionContextResult> 
   const debug = createSearchDebug(
     searchTerms,
     searchQueries,
-    databasePages.length,
+    initialSeedPages.length,
     seedPageMap.size,
     scoredPages,
     selectedPages,
@@ -1322,6 +1460,7 @@ function buildContextText(pages: NotionContextPage[]): string {
   return pages
     .map((page, index) => {
       return `【参照${index + 1}】
+ナレッジベース: ${page.sourceName}
 タイトル: ${page.title}
 関連度スコア: ${page.score}
 最終更新: ${page.lastEditedTime ?? "不明"}
@@ -1352,12 +1491,12 @@ async function callOpenAI(
   const contextText = buildContextText(contextPages);
   const referenceTitles = contextPages
     .filter((page) => page.score > 0)
-    .map((page) => page.title)
+    .map((page) => `${page.sourceName} > ${page.title}`)
     .filter(Boolean);
 
   const prompt = `
 あなたはRSJP業務マニュアルAIです。
-以下のNotionマニュアル情報を根拠に、社内業務を初心者にも分かるように説明してください。
+以下の複数のNotionナレッジベース情報を根拠に、社内業務を初心者にも分かるように説明してください。
 
 このAIは、単なる回答作成ツールではありません。
 新人職員が自分で作業を進められるようにしつつ、危ない判断の前に課長確認へ誘導する業務ナビです。
@@ -1375,12 +1514,15 @@ ${contextText}
 - 日本語で回答する
 - 初心者向けに、やさしく具体的に説明する
 - Notionマニュアル情報に書かれている内容を最優先する
+- 複数のNotionナレッジベースに情報がある場合は、どのナレッジベースの情報かを意識して整理する
+- RSJP固有の内容はRSJP Manualを優先し、共通ルールや一般手順はGeneral Manualなどの一般ナレッジも参考にする
+- 複数のNotion情報に矛盾や古い可能性がある場合は断定せず、課長確認または担当部署確認に寄せる
 - Notionマニュアル情報に書かれていない内容は、推測で断定しない
 - 情報が不足している場合は「Notion上では確認できませんでした」と明記する
 - ただし、Notion情報から安全に言える範囲の一般的な流れは「確認が必要な一般的流れ」として分けて書く
 - 担当者個人に依存した表現を避ける
 - 必要に応じて「最新の学内ルール・担当部署の指示を確認してください」と入れる
-- referencesには実際に使ったNotionページタイトルのみを入れる
+- referencesには実際に使ったNotionページタイトルのみを入れる。可能なら「ナレッジベース名 > ページタイトル」の形にする
 - imageUrlは空文字にする
 - imagePromptには、回答内容を見やすいポンチ絵・親しみやすいアニメ調の業務図解にするための具体的な日本語プロンプトを書く
 - imagePromptでは、短い日本語ラベル、数字、項目名を入れてよい
