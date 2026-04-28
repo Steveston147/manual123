@@ -1394,7 +1394,7 @@ export default function App() {
           <section className="product-panel">
             <div className="product-kicker">Internal Operations Navigator</div>
 
-            <h2>新人が迷わず進め、危ない判断では止まれる業務ナビ。</h2>
+            <h2>迷わず進める、止まれる業務ナビ</h2>
 
             <p className="product-lead">
               RSJP業務マニュアルAIは、Notion上の業務マニュアルをもとに、回答・手順・チェックリスト・課長確認ポイントを整理します。
