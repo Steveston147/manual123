@@ -134,16 +134,16 @@ type NotionContextResult = {
 };
 
 const MAX_CONTEXT_PAGES = 10;
-const MAX_DISCOVERED_PAGES = 140;
-const MAX_PAGE_CONTENT_LENGTH = 6200;
-const MAX_DATABASE_PAGES = 180;
-const MAX_SEED_PAGES = 110;
+const MAX_DISCOVERED_PAGES = 160;
+const MAX_PAGE_CONTENT_LENGTH = 6500;
+const MAX_DATABASE_PAGES = 220;
+const MAX_SEED_PAGES = 120;
 const MAX_BLOCK_CHILD_PAGES = 5;
 const MAX_CHILD_PAGES_PER_PAGE = 30;
 const MAX_CHILD_DATABASE_PAGES = 45;
 const MAX_RECURSION_DEPTH = 4;
 const MAX_NESTED_BLOCK_DEPTH = 3;
-const MIN_PAGES_PER_CONFIGURED_SOURCE = 1;
+const MAX_SHALLOW_PROPERTY_PAGES = 500;
 
 const ELIGIBILITY_TERMS = [
   "参加対象外",
@@ -219,6 +219,50 @@ const SCHEDULE_TERMS = [
   "check-out",
   "arrival",
   "departure",
+];
+
+const COMMUTE_TERMS = [
+  "通学",
+  "通学方法",
+  "大学への通学",
+  "大学まで",
+  "大学に行く",
+  "アクセス",
+  "交通",
+  "交通手段",
+  "移動",
+  "移動方法",
+  "徒歩",
+  "歩く",
+  "バス",
+  "電車",
+  "鉄道",
+  "JR",
+  "阪急",
+  "モノレール",
+  "最寄駅",
+  "駅",
+  "定期券",
+  "交通費",
+  "自転車",
+  "自動車",
+  "車",
+  "バイク",
+  "送迎",
+  "Pledge",
+  "誓約書",
+  "commute",
+  "commuting",
+  "transportation",
+  "transport",
+  "access",
+  "bus",
+  "train",
+  "walk",
+  "walking",
+  "bicycle",
+  "bike",
+  "car",
 ];
 
 const DEFAULT_MANAGER_GATE: ManagerGate = {
@@ -323,7 +367,7 @@ function getConfiguredNotionSources(): NotionSourceConfig[] {
   if (thirdDatabaseId) {
     sources.push({
       id: thirdDatabaseId,
-      name: process.env.NOTION_DATABASE_NAME_3 || "Additional Manual",
+      name: process.env.NOTION_DATABASE_NAME_3 || "RSJP FAQ",
       type: "database",
     });
   }
@@ -518,6 +562,7 @@ function extractPagePropertiesText(page: NotionPage): string {
     "キーワード",
     "Status",
     "ステータス",
+    "SourceURL",
     "UpdatedAt",
     "更新日",
     "Date",
@@ -643,6 +688,10 @@ function isScheduleQuestion(question: string): boolean {
   return questionHasAny(question, SCHEDULE_TERMS);
 }
 
+function isCommuteQuestion(question: string): boolean {
+  return questionHasAny(question, COMMUTE_TERMS);
+}
+
 function buildSearchTerms(question: string): string[] {
   const cleaned = normalizeTextForSearch(question);
 
@@ -741,6 +790,7 @@ function buildSearchTerms(question: string): string[] {
     "トラブル",
     ...ELIGIBILITY_TERMS,
     ...SCHEDULE_TERMS,
+    ...COMMUTE_TERMS,
   ];
 
   const expandedTerms: string[] = [];
@@ -870,6 +920,41 @@ function buildSearchTerms(question: string): string[] {
     );
   }
 
+  if (isCommuteQuestion(question)) {
+    expandedTerms.push(
+      "通学",
+      "通学方法",
+      "大学への通学",
+      "アクセス",
+      "交通",
+      "交通手段",
+      "移動",
+      "徒歩",
+      "バス",
+      "電車",
+      "最寄駅",
+      "駅",
+      "定期券",
+      "交通費",
+      "自転車",
+      "自動車",
+      "車",
+      "バイク",
+      "Pledge",
+      "誓約書",
+      "禁止",
+      "commute",
+      "commuting",
+      "transportation",
+      "access",
+      "walking",
+      "bus",
+      "train",
+      "bicycle",
+      "car"
+    );
+  }
+
   const matchedTerms = domainTerms.filter((term) => questionHasAny(question, [term]));
 
   return Array.from(new Set([...matchedTerms, ...expandedTerms, ...roughTerms])).filter(
@@ -959,11 +1044,28 @@ function buildSearchQueries(question: string, terms: string[]): string[] {
     );
   }
 
-  queries.push(...terms.slice(0, 16));
+  if (isCommuteQuestion(question)) {
+    queries.push(
+      "大学への通学方法を教えて",
+      "大学への通学方法",
+      "大学 通学方法",
+      "通学 方法",
+      "通学 交通手段",
+      "大学 アクセス",
+      "徒歩 バス 電車",
+      "自転車 自動車 禁止",
+      "Pledge 通学",
+      "commuting transportation",
+      "access to university",
+      "walking bus train bicycle car"
+    );
+  }
+
+  queries.push(...terms.slice(0, 18));
 
   return Array.from(new Set(queries.map((query) => query.trim()).filter(Boolean))).slice(
     0,
-    24
+    28
   );
 }
 
@@ -975,12 +1077,13 @@ function scorePage(question: string, page: NotionContextPage): number {
   const q = normalizeTextForSearch(question);
   const eligibilityQuestion = isEligibilityQuestion(question);
   const scheduleQuestion = isScheduleQuestion(question);
+  const commuteQuestion = isCommuteQuestion(question);
 
   let score = 0;
 
   if (title.includes(q)) score += 45;
   if (content.includes(q)) score += 24;
-  if (propertyText.includes(q)) score += 34;
+  if (propertyText.includes(q)) score += 40;
 
   for (const term of terms) {
     const t = normalizeTextForSearch(term);
@@ -988,7 +1091,7 @@ function scorePage(question: string, page: NotionContextPage): number {
     if (!t) continue;
 
     if (title.includes(t)) score += 20;
-    if (propertyText.includes(t)) score += 12;
+    if (propertyText.includes(t)) score += 14;
     if (content.includes(t)) score += 5;
   }
 
@@ -1066,7 +1169,7 @@ function scorePage(question: string, page: NotionContextPage): number {
       if (!t) continue;
 
       if (title.includes(t)) score += 26;
-      if (propertyText.includes(t)) score += 14;
+      if (propertyText.includes(t)) score += 16;
       if (content.includes(t)) score += 8;
     }
 
@@ -1077,6 +1180,7 @@ function scorePage(question: string, page: NotionContextPage): number {
     if (
       page.sourceName.toLowerCase().includes("general") ||
       page.sourceName.toLowerCase().includes("shortterm") ||
+      page.sourceName.toLowerCase().includes("faq") ||
       page.sourceName.includes("QA")
     ) {
       score += 8;
@@ -1113,24 +1217,78 @@ function scorePage(question: string, page: NotionContextPage): number {
       if (!t) continue;
 
       if (title.includes(t)) score += 18;
-      if (propertyText.includes(t)) score += 14;
+      if (propertyText.includes(t)) score += 16;
       if (content.includes(t)) score += 6;
     }
 
     if (title.includes("2026") && title.includes("rsjp")) score += 34;
-    if (propertyText.includes("2026") && propertyText.includes("rsjp")) score += 28;
+    if (propertyText.includes("2026") && propertyText.includes("rsjp")) score += 30;
     if (content.includes("2026") && content.includes("rsjp")) score += 16;
 
     if (title.includes("日程") || title.includes("期間")) score += 22;
-    if (propertyText.includes("日程") || propertyText.includes("期間")) score += 18;
+    if (propertyText.includes("日程") || propertyText.includes("期間")) score += 20;
     if (propertyText.includes("answer:") || propertyText.includes("回答:")) score += 12;
 
     if (
       page.sourceName.toLowerCase().includes("general") ||
       page.sourceName.toLowerCase().includes("shortterm") ||
+      page.sourceName.toLowerCase().includes("faq") ||
       page.sourceName.includes("QA")
     ) {
       score += 12;
+    }
+  }
+
+  if (commuteQuestion) {
+    const commuteBoostTerms = [
+      "通学",
+      "通学方法",
+      "大学への通学",
+      "アクセス",
+      "交通",
+      "交通手段",
+      "徒歩",
+      "バス",
+      "電車",
+      "自転車",
+      "自動車",
+      "車",
+      "Pledge",
+      "誓約書",
+      "禁止",
+      "commute",
+      "commuting",
+      "transportation",
+      "access",
+      "walk",
+      "walking",
+      "bus",
+      "train",
+      "bicycle",
+      "car",
+    ];
+
+    for (const term of commuteBoostTerms) {
+      const t = normalizeTextForSearch(term);
+
+      if (!t) continue;
+
+      if (title.includes(t)) score += 24;
+      if (propertyText.includes(t)) score += 22;
+      if (content.includes(t)) score += 8;
+    }
+
+    if (title.includes("大学") && title.includes("通学")) score += 45;
+    if (propertyText.includes("大学") && propertyText.includes("通学")) score += 45;
+    if (propertyText.includes("answer:") || propertyText.includes("回答:")) score += 14;
+
+    if (
+      page.sourceName.toLowerCase().includes("faq") ||
+      page.sourceName.toLowerCase().includes("additional") ||
+      page.sourceName.toLowerCase().includes("general") ||
+      page.sourceName.includes("QA")
+    ) {
+      score += 18;
     }
   }
 
@@ -1162,11 +1320,11 @@ function scorePage(question: string, page: NotionContextPage): number {
   }
 
   if (propertyText && propertyText.length > 0) {
-    score += 3;
+    score += 4;
   }
 
-  if (!content.trim() && propertyText.trim()) {
-    score += 6;
+  if (!page.blockText?.trim() && propertyText.trim()) {
+    score += 8;
   }
 
   if (page.lastEditedTime) {
@@ -1236,7 +1394,7 @@ function createSearchDebug(
         score: page.score,
         url: page.url,
         lastEditedTime: page.lastEditedTime,
-        contentPreview: previewSource.replace(/\s+/g, " ").slice(0, 260),
+        contentPreview: previewSource.replace(/\s+/g, " ").slice(0, 320),
         sourceName: page.sourceName,
         sourceType: page.sourceType,
       };
@@ -1350,7 +1508,7 @@ function fallbackPayload(message: string, debug?: SearchDebug): AnswerPayload {
   const fallbackSteps = [
     "VercelのEnvironment Variablesを確認する",
     "NOTION_API_KEY と NOTION_DATABASE_ID を確認する",
-    "必要に応じて NOTION_DATABASE_ID_2 を確認する",
+    "必要に応じて NOTION_DATABASE_ID_2 と NOTION_DATABASE_ID_3 を確認する",
     "Notion DBがRSJP Manual AIに共有されているか確認する",
     "api/ask.tsの内容を確認する",
     "GitHubへcommit / pushする",
@@ -1361,7 +1519,7 @@ function fallbackPayload(message: string, debug?: SearchDebug): AnswerPayload {
   const fallbackChecklist = [
     { text: "NOTION_API_KEYが設定されている" },
     { text: "NOTION_DATABASE_IDが設定されている" },
-    { text: "必要に応じて NOTION_DATABASE_ID_2 が設定されている" },
+    { text: "必要に応じて NOTION_DATABASE_ID_2 と NOTION_DATABASE_ID_3 が設定されている" },
     { text: "Notion DBをIntegrationに共有している" },
     { text: "OPENAI_API_KEYが設定されている" },
     { text: "Vercelの最新デプロイが成功している" },
@@ -1742,9 +1900,13 @@ async function getInitialNotionSeedPages(sources: NotionSourceConfig[]): Promise
 
   for (const source of sources) {
     if (source.type === "database") {
-      const databasePages = await getDatabasePagesById(source.id, MAX_DATABASE_PAGES);
+      try {
+        const databasePages = await getDatabasePagesById(source.id, MAX_DATABASE_PAGES);
 
-      seedGroups.push(databasePages.map((page) => ({ page, source })));
+        seedGroups.push(databasePages.map((page) => ({ page, source })));
+      } catch {
+        seedGroups.push([]);
+      }
     } else if (source.type === "page") {
       const rootPage = await retrievePage(source.id);
 
@@ -1770,6 +1932,26 @@ async function getInitialNotionSeedPages(sources: NotionSourceConfig[]): Promise
   }
 
   return interleavedSeeds;
+}
+
+function createShallowPropertyCandidate(seed: NotionSeedPage): NotionContextPage {
+  const rawTitle = extractPageTitle(seed.page);
+  const titlePath = seed.parentPath ? `${seed.parentPath} > ${rawTitle}` : rawTitle;
+  const propertyText = extractPagePropertiesText(seed.page);
+
+  return {
+    id: seed.page.id,
+    title: titlePath,
+    url: seed.page.url,
+    lastEditedTime: seed.page.last_edited_time,
+    content: propertyText ? "【データベースプロパティ】\n" + propertyText : "",
+    propertyText,
+    blockText: "",
+    score: 0,
+    sourceName: seed.source.name,
+    sourceId: seed.source.id,
+    sourceType: seed.source.type,
+  };
 }
 
 async function collectPageCandidate(
@@ -1870,6 +2052,43 @@ async function collectPageCandidate(
   }
 }
 
+function mergeCandidates(
+  shallowCandidates: NotionContextPage[],
+  detailedCandidates: NotionContextPage[]
+): NotionContextPage[] {
+  const map = new Map<string, NotionContextPage>();
+
+  for (const candidate of shallowCandidates) {
+    map.set(candidate.id, candidate);
+  }
+
+  for (const candidate of detailedCandidates) {
+    const existing = map.get(candidate.id);
+
+    if (!existing) {
+      map.set(candidate.id, candidate);
+      continue;
+    }
+
+    map.set(candidate.id, {
+      ...candidate,
+      propertyText: candidate.propertyText || existing.propertyText,
+      blockText: candidate.blockText || existing.blockText,
+      content:
+        candidate.content.trim() ||
+        existing.content.trim() ||
+        [
+          candidate.propertyText || existing.propertyText || "",
+          candidate.blockText || existing.blockText || "",
+        ]
+          .filter(Boolean)
+          .join("\n\n"),
+    });
+  }
+
+  return Array.from(map.values());
+}
+
 function selectBalancedPages(
   scoredPages: NotionContextPage[],
   configuredSources: NotionSourceConfig[],
@@ -1879,7 +2098,7 @@ function selectBalancedPages(
   const selected = new Map<string, NotionContextPage>();
   const filtered =
     maxScore <= 0
-      ? scoredPages.slice(0, 6)
+      ? scoredPages.slice(0, 8)
       : scoredPages.filter((page) => page.score >= minimumScore);
 
   for (const source of configuredSources) {
@@ -1900,13 +2119,6 @@ function selectBalancedPages(
     selected.set(page.id, page);
   }
 
-  if (selected.size < Math.min(MIN_PAGES_PER_CONFIGURED_SOURCE, configuredSources.length)) {
-    for (const page of scoredPages) {
-      if (selected.size >= MAX_CONTEXT_PAGES) break;
-      selected.set(page.id, page);
-    }
-  }
-
   return Array.from(selected.values())
     .sort((a, b) => b.score - a.score)
     .slice(0, MAX_CONTEXT_PAGES);
@@ -1919,7 +2131,7 @@ async function getNotionContext(question: string): Promise<NotionContextResult> 
 
   if (sources.length === 0) {
     throw new Error(
-      "NOTION_DATABASE_ID is not set. Add NOTION_DATABASE_ID and optional NOTION_DATABASE_ID_2 to Vercel Environment Variables."
+      "NOTION_DATABASE_ID is not set. Add NOTION_DATABASE_ID and optional NOTION_DATABASE_ID_2 / NOTION_DATABASE_ID_3 to Vercel Environment Variables."
     );
   }
 
@@ -1947,21 +2159,40 @@ async function getNotionContext(question: string): Promise<NotionContextResult> 
     }
   }
 
-  const seen = new Set<string>();
-  const discoveredPages: NotionContextPage[] = [];
+  const seedPages = Array.from(seedPageMap.values());
 
-  for (const seed of Array.from(seedPageMap.values()).slice(0, MAX_SEED_PAGES)) {
-    if (discoveredPages.length >= MAX_DISCOVERED_PAGES) break;
+  const shallowCandidates = seedPages
+    .slice(0, MAX_SHALLOW_PROPERTY_PAGES)
+    .map((seed) => createShallowPropertyCandidate(seed));
+
+  const seen = new Set<string>();
+  const detailedCandidates: NotionContextPage[] = [];
+
+  const prioritySeeds = seedPages
+    .map((seed) => {
+      const candidate = createShallowPropertyCandidate(seed);
+      return {
+        seed,
+        score: scorePage(question, candidate),
+      };
+    })
+    .sort((a, b) => b.score - a.score)
+    .map((item) => item.seed);
+
+  for (const seed of prioritySeeds.slice(0, MAX_SEED_PAGES)) {
+    if (detailedCandidates.length >= MAX_DISCOVERED_PAGES) break;
 
     await collectPageCandidate(
       seed.page,
       0,
       seed.parentPath ?? "",
       seen,
-      discoveredPages,
+      detailedCandidates,
       seed.source
     );
   }
+
+  const discoveredPages = mergeCandidates(shallowCandidates, detailedCandidates);
 
   const scoredPages = discoveredPages
     .map((page) => ({
@@ -2054,12 +2285,14 @@ ${contextText}
 - 日本語で回答する
 - 初心者向けに、やさしく具体的に説明する
 - Notionマニュアル情報に書かれている内容を最優先する
-- データベースプロパティにある Question / Answer / Program / Category / Keyword / Status / Date / UpdatedAt の内容も、ページ本文と同じ重要度で扱う
+- データベースプロパティにある Question / Answer / Program / Category / Keyword / Status / SourceURL / Date / UpdatedAt の内容も、ページ本文と同じ重要度で扱う
+- Question / Answer型のFAQデータベースでは、Answer欄を最重要の回答根拠として扱う
 - 複数のNotionナレッジベースに情報がある場合は、どのナレッジベースの情報かを意識して整理する
-- RSJP固有の内容はRSJP Manualを優先し、共通ルールや一般手順はGeneral Manualなどの一般ナレッジも参考にする
-- 日程、開始日、終了日、チェックイン、チェックアウト、費用、支払期限など、確定情報を問う質問では、複数の参照元を照合する
+- RSJP固有の内容はRSJP Manualを優先し、共通ルールや一般手順はGeneral Manual、FAQ、Additional Manualなどの一般ナレッジも参考にする
+- 日程、開始日、終了日、チェックイン、チェックアウト、費用、支払期限、通学方法、交通手段、禁止事項など、確定情報を問う質問では、複数の参照元を照合する
 - 複数のNotion情報に矛盾がある場合は、片方だけを断定せず、「情報に差異があります」と明記し、どのページに何と書かれているかを分けて説明する
 - 日程情報については、Question/Answer型データベースのAnswer欄にある値も必ず確認対象にする
+- 通学方法、交通手段、徒歩、バス、電車、自転車、自動車、Pledge、誓約書、禁止事項に関する質問では、FAQデータベースのAnswer欄を必ず確認対象にする
 - 参加対象外、応募資格、参加資格、受入可否、対象学生、eligibility などに関わる質問では、該当ページの根拠がない限り、受入可否を断定しない
 - 参加対象外の学生への案内や例外対応は、原則として課長確認が必要な判断として扱う
 - Notionマニュアル情報に書かれていない内容は、推測で断定しない
