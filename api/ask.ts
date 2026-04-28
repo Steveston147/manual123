@@ -7,6 +7,10 @@ type AskRequestBody = {
   dataSource?: {
     provider?: string;
     notionDatabaseUrl?: string;
+    notionDatabaseUrls?: Array<{
+      name?: string;
+      url?: string;
+    }>;
     requireLatestIfDuplicated?: boolean;
   };
   outputFormat?: Record<string, string>;
@@ -120,6 +124,8 @@ type NotionContextPage = {
   sourceName: string;
   sourceId: string;
   sourceType: "database" | "page" | "search";
+  propertyText?: string;
+  blockText?: string;
 };
 
 type NotionContextResult = {
@@ -127,16 +133,17 @@ type NotionContextResult = {
   debug: SearchDebug;
 };
 
-const MAX_CONTEXT_PAGES = 9;
-const MAX_DISCOVERED_PAGES = 120;
-const MAX_PAGE_CONTENT_LENGTH = 5200;
-const MAX_DATABASE_PAGES = 160;
-const MAX_SEED_PAGES = 90;
+const MAX_CONTEXT_PAGES = 10;
+const MAX_DISCOVERED_PAGES = 140;
+const MAX_PAGE_CONTENT_LENGTH = 6200;
+const MAX_DATABASE_PAGES = 180;
+const MAX_SEED_PAGES = 110;
 const MAX_BLOCK_CHILD_PAGES = 5;
 const MAX_CHILD_PAGES_PER_PAGE = 30;
 const MAX_CHILD_DATABASE_PAGES = 45;
 const MAX_RECURSION_DEPTH = 4;
 const MAX_NESTED_BLOCK_DEPTH = 3;
+const MIN_PAGES_PER_CONFIGURED_SOURCE = 1;
 
 const ELIGIBILITY_TERMS = [
   "参加対象外",
@@ -177,6 +184,41 @@ const ELIGIBILITY_TERMS = [
   "applicants",
   "target student",
   "target students",
+];
+
+const SCHEDULE_TERMS = [
+  "日程",
+  "期間",
+  "実施期間",
+  "開始日",
+  "終了日",
+  "開始",
+  "終了",
+  "チェックイン",
+  "チェックアウト",
+  "入寮",
+  "退寮",
+  "開催日",
+  "実施日",
+  "スケジュール",
+  "予定",
+  "2026",
+  "2027",
+  "RSJP",
+  "RWJP",
+  "Express",
+  "RSJP Express",
+  "RWJP Express",
+  "program dates",
+  "programme dates",
+  "schedule",
+  "start date",
+  "end date",
+  "check-in",
+  "check out",
+  "check-out",
+  "arrival",
+  "departure",
 ];
 
 const DEFAULT_MANAGER_GATE: ManagerGate = {
@@ -340,6 +382,177 @@ function extractPageTitle(page: NotionPage): string {
   return "タイトル未取得";
 }
 
+function extractPropertyValueText(property: any): string {
+  if (!property || typeof property !== "object") return "";
+
+  const type = property.type;
+
+  if (!type) return "";
+
+  switch (type) {
+    case "title":
+      return extractPlainText(property.title);
+
+    case "rich_text":
+      return extractPlainText(property.rich_text);
+
+    case "select":
+      return property.select?.name ?? "";
+
+    case "multi_select":
+      return Array.isArray(property.multi_select)
+        ? property.multi_select.map((item: any) => item?.name).filter(Boolean).join(" / ")
+        : "";
+
+    case "status":
+      return property.status?.name ?? "";
+
+    case "date": {
+      const start = property.date?.start ?? "";
+      const end = property.date?.end ?? "";
+      return [start, end].filter(Boolean).join(" - ");
+    }
+
+    case "number":
+      return typeof property.number === "number" ? String(property.number) : "";
+
+    case "checkbox":
+      return typeof property.checkbox === "boolean" ? String(property.checkbox) : "";
+
+    case "url":
+      return property.url ?? "";
+
+    case "email":
+      return property.email ?? "";
+
+    case "phone_number":
+      return property.phone_number ?? "";
+
+    case "people":
+      return Array.isArray(property.people)
+        ? property.people
+            .map((person: any) => person?.name || person?.person?.email || person?.id)
+            .filter(Boolean)
+            .join(" / ")
+        : "";
+
+    case "files":
+      return Array.isArray(property.files)
+        ? property.files
+            .map((file: any) => file?.name || file?.file?.url || file?.external?.url)
+            .filter(Boolean)
+            .join(" / ")
+        : "";
+
+    case "relation":
+      return Array.isArray(property.relation)
+        ? property.relation.map((item: any) => item?.id).filter(Boolean).join(" / ")
+        : "";
+
+    case "formula": {
+      const formulaType = property.formula?.type;
+      if (!formulaType) return "";
+
+      const formulaValue = property.formula?.[formulaType];
+
+      if (formulaType === "date") {
+        const start = formulaValue?.start ?? "";
+        const end = formulaValue?.end ?? "";
+        return [start, end].filter(Boolean).join(" - ");
+      }
+
+      return formulaValue === null || formulaValue === undefined ? "" : String(formulaValue);
+    }
+
+    case "rollup": {
+      const rollupType = property.rollup?.type;
+      if (!rollupType) return "";
+
+      const rollupValue = property.rollup?.[rollupType];
+
+      if (Array.isArray(rollupValue)) {
+        return rollupValue
+          .map((item: any) => extractPropertyValueText(item))
+          .filter(Boolean)
+          .join(" / ");
+      }
+
+      if (rollupType === "date") {
+        const start = rollupValue?.start ?? "";
+        const end = rollupValue?.end ?? "";
+        return [start, end].filter(Boolean).join(" - ");
+      }
+
+      return rollupValue === null || rollupValue === undefined ? "" : String(rollupValue);
+    }
+
+    case "created_time":
+      return property.created_time ?? "";
+
+    case "last_edited_time":
+      return property.last_edited_time ?? "";
+
+    case "created_by":
+      return property.created_by?.name || property.created_by?.id || "";
+
+    case "last_edited_by":
+      return property.last_edited_by?.name || property.last_edited_by?.id || "";
+
+    default:
+      return "";
+  }
+}
+
+function extractPagePropertiesText(page: NotionPage): string {
+  const properties = page.properties ?? {};
+  const importantOrder = [
+    "Question",
+    "質問",
+    "Answer",
+    "回答",
+    "Program",
+    "プログラム",
+    "Category",
+    "カテゴリ",
+    "Keyword",
+    "キーワード",
+    "Status",
+    "ステータス",
+    "UpdatedAt",
+    "更新日",
+    "Date",
+    "日付",
+  ];
+
+  const lines: string[] = [];
+  const usedPropertyNames = new Set<string>();
+
+  for (const propertyName of importantOrder) {
+    const property = properties[propertyName];
+
+    if (!property) continue;
+
+    const text = extractPropertyValueText(property);
+
+    if (text) {
+      lines.push(`${propertyName}: ${text}`);
+      usedPropertyNames.add(propertyName);
+    }
+  }
+
+  for (const [propertyName, property] of Object.entries(properties)) {
+    if (usedPropertyNames.has(propertyName)) continue;
+
+    const text = extractPropertyValueText(property);
+
+    if (text) {
+      lines.push(`${propertyName}: ${text}`);
+    }
+  }
+
+  return lines.join("\n").slice(0, MAX_PAGE_CONTENT_LENGTH);
+}
+
 function extractBlockText(block: any): string {
   const type = block?.type;
 
@@ -424,6 +637,10 @@ function questionHasAny(question: string, terms: string[]): boolean {
 
 function isEligibilityQuestion(question: string): boolean {
   return questionHasAny(question, ELIGIBILITY_TERMS);
+}
+
+function isScheduleQuestion(question: string): boolean {
+  return questionHasAny(question, SCHEDULE_TERMS);
 }
 
 function buildSearchTerms(question: string): string[] {
@@ -523,6 +740,7 @@ function buildSearchTerms(question: string): string[] {
     "緊急",
     "トラブル",
     ...ELIGIBILITY_TERMS,
+    ...SCHEDULE_TERMS,
   ];
 
   const expandedTerms: string[] = [];
@@ -616,42 +834,39 @@ function buildSearchTerms(question: string): string[] {
   }
 
   if (isEligibilityQuestion(question)) {
+    expandedTerms.push(...ELIGIBILITY_TERMS);
+  }
+
+  if (isScheduleQuestion(question)) {
     expandedTerms.push(
-      "参加対象外",
-      "対象外",
-      "対象者",
-      "対象学生",
-      "対象条件",
-      "参加条件",
-      "参加資格",
-      "応募資格",
-      "申込資格",
-      "受入可否",
-      "受け入れ可否",
-      "受入れ可否",
-      "参加可否",
-      "受入対象",
-      "受け入れ対象",
-      "高校生",
-      "大学生",
-      "大学院生",
-      "学部生",
-      "既卒",
-      "社会人",
-      "問い合わせ",
-      "問合せ",
-      "案内",
-      "例外",
-      "例外対応",
-      "eligibility",
-      "eligible",
-      "ineligible",
-      "not eligible",
-      "qualification",
-      "requirements",
-      "applicant",
-      "target student",
-      "target students"
+      "日程",
+      "期間",
+      "実施期間",
+      "開始日",
+      "終了日",
+      "開始",
+      "終了",
+      "チェックイン",
+      "チェックアウト",
+      "入寮",
+      "退寮",
+      "program dates",
+      "programme dates",
+      "schedule",
+      "start date",
+      "end date",
+      "check-in",
+      "check-out",
+      "arrival",
+      "departure",
+      "RSJP",
+      "RWJP",
+      "Express",
+      "RSJP/RWJP",
+      "2026RSJP",
+      "2026 RSJP",
+      "2026年RSJP",
+      "2026年RSJPの日程"
     );
   }
 
@@ -725,11 +940,30 @@ function buildSearchQueries(question: string, terms: string[]): string[] {
     );
   }
 
-  queries.push(...terms.slice(0, 14));
+  if (isScheduleQuestion(question)) {
+    queries.push(
+      "2026 RSJP 日程",
+      "2026年RSJPの日程",
+      "2026 RSJP 開始日 終了日",
+      "2026 RSJP チェックイン チェックアウト",
+      "RSJP 日程",
+      "RSJP 実施期間",
+      "RSJP 開始日 終了日",
+      "RSJP チェックイン チェックアウト",
+      "RSJP program dates",
+      "RSJP start date end date",
+      "RSJP check-in check-out",
+      "RSJP/RWJP 日程",
+      "実施日程",
+      "プログラム日程"
+    );
+  }
+
+  queries.push(...terms.slice(0, 16));
 
   return Array.from(new Set(queries.map((query) => query.trim()).filter(Boolean))).slice(
     0,
-    18
+    24
   );
 }
 
@@ -737,13 +971,16 @@ function scorePage(question: string, page: NotionContextPage): number {
   const terms = buildSearchTerms(question);
   const title = normalizeTextForSearch(page.title);
   const content = normalizeTextForSearch(page.content);
+  const propertyText = normalizeTextForSearch(page.propertyText ?? "");
   const q = normalizeTextForSearch(question);
   const eligibilityQuestion = isEligibilityQuestion(question);
+  const scheduleQuestion = isScheduleQuestion(question);
 
   let score = 0;
 
   if (title.includes(q)) score += 45;
-  if (content.includes(q)) score += 20;
+  if (content.includes(q)) score += 24;
+  if (propertyText.includes(q)) score += 34;
 
   for (const term of terms) {
     const t = normalizeTextForSearch(term);
@@ -751,6 +988,7 @@ function scorePage(question: string, page: NotionContextPage): number {
     if (!t) continue;
 
     if (title.includes(t)) score += 20;
+    if (propertyText.includes(t)) score += 12;
     if (content.includes(t)) score += 5;
   }
 
@@ -828,6 +1066,7 @@ function scorePage(question: string, page: NotionContextPage): number {
       if (!t) continue;
 
       if (title.includes(t)) score += 26;
+      if (propertyText.includes(t)) score += 14;
       if (content.includes(t)) score += 8;
     }
 
@@ -840,7 +1079,58 @@ function scorePage(question: string, page: NotionContextPage): number {
       page.sourceName.toLowerCase().includes("shortterm") ||
       page.sourceName.includes("QA")
     ) {
-      score += 6;
+      score += 8;
+    }
+  }
+
+  if (scheduleQuestion) {
+    const scheduleBoostTerms = [
+      "日程",
+      "期間",
+      "実施期間",
+      "開始日",
+      "終了日",
+      "開始",
+      "終了",
+      "チェックイン",
+      "チェックアウト",
+      "2026",
+      "2027",
+      "RSJP",
+      "RWJP",
+      "Express",
+      "program dates",
+      "schedule",
+      "start date",
+      "end date",
+      "check-in",
+      "check-out",
+    ];
+
+    for (const term of scheduleBoostTerms) {
+      const t = normalizeTextForSearch(term);
+
+      if (!t) continue;
+
+      if (title.includes(t)) score += 18;
+      if (propertyText.includes(t)) score += 14;
+      if (content.includes(t)) score += 6;
+    }
+
+    if (title.includes("2026") && title.includes("rsjp")) score += 34;
+    if (propertyText.includes("2026") && propertyText.includes("rsjp")) score += 28;
+    if (content.includes("2026") && content.includes("rsjp")) score += 16;
+
+    if (title.includes("日程") || title.includes("期間")) score += 22;
+    if (propertyText.includes("日程") || propertyText.includes("期間")) score += 18;
+    if (propertyText.includes("answer:") || propertyText.includes("回答:")) score += 12;
+
+    if (
+      page.sourceName.toLowerCase().includes("general") ||
+      page.sourceName.toLowerCase().includes("shortterm") ||
+      page.sourceName.includes("QA")
+    ) {
+      score += 12;
     }
   }
 
@@ -869,6 +1159,14 @@ function scorePage(question: string, page: NotionContextPage): number {
 
   if (!terms.some((term) => content.includes(normalizeTextForSearch(term)))) {
     score -= 2;
+  }
+
+  if (propertyText && propertyText.length > 0) {
+    score += 3;
+  }
+
+  if (!content.trim() && propertyText.trim()) {
+    score += 6;
   }
 
   if (page.lastEditedTime) {
@@ -926,15 +1224,23 @@ function createSearchDebug(
     selectedPageCount: selectedPages.length,
     maxScore,
     minimumScore,
-    selectedPages: selectedPages.map((page) => ({
-      title: `${page.sourceName} > ${page.title}`,
-      score: page.score,
-      url: page.url,
-      lastEditedTime: page.lastEditedTime,
-      contentPreview: page.content.replace(/\s+/g, " ").slice(0, 220),
-      sourceName: page.sourceName,
-      sourceType: page.sourceType,
-    })),
+    selectedPages: selectedPages.map((page) => {
+      const previewSource =
+        page.content.trim() ||
+        page.propertyText?.trim() ||
+        page.blockText?.trim() ||
+        "";
+
+      return {
+        title: `${page.sourceName} > ${page.title}`,
+        score: page.score,
+        url: page.url,
+        lastEditedTime: page.lastEditedTime,
+        contentPreview: previewSource.replace(/\s+/g, " ").slice(0, 260),
+        sourceName: page.sourceName,
+        sourceType: page.sourceType,
+      };
+    }),
     sourceCounts,
   };
 }
@@ -1481,15 +1787,26 @@ async function collectPageCandidate(
 
   const rawTitle = extractPageTitle(page);
   const titlePath = parentPath ? `${parentPath} > ${rawTitle}` : rawTitle;
+  const propertyText = extractPagePropertiesText(page);
 
-  const { content, childPages, childDatabases } = await getPageContentAndChildPages(page.id);
+  const { content: blockText, childPages, childDatabases } = await getPageContentAndChildPages(page.id);
+
+  const combinedContent = [
+    propertyText ? "【データベースプロパティ】\n" + propertyText : "",
+    blockText ? "【ページ本文】\n" + blockText : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n")
+    .slice(0, MAX_PAGE_CONTENT_LENGTH);
 
   output.push({
     id: page.id,
     title: titlePath,
     url: page.url,
     lastEditedTime: page.last_edited_time,
-    content,
+    content: combinedContent,
+    propertyText,
+    blockText,
     score: 0,
     sourceName: source.name,
     sourceId: source.id,
@@ -1511,6 +1828,8 @@ async function collectPageCandidate(
         url: undefined,
         lastEditedTime: undefined,
         content: "",
+        propertyText: "",
+        blockText: "",
         score: 0,
         sourceName: source.name,
         sourceId: source.id,
@@ -1549,6 +1868,48 @@ async function collectPageCandidate(
       );
     }
   }
+}
+
+function selectBalancedPages(
+  scoredPages: NotionContextPage[],
+  configuredSources: NotionSourceConfig[],
+  maxScore: number,
+  minimumScore: number
+): NotionContextPage[] {
+  const selected = new Map<string, NotionContextPage>();
+  const filtered =
+    maxScore <= 0
+      ? scoredPages.slice(0, 6)
+      : scoredPages.filter((page) => page.score >= minimumScore);
+
+  for (const source of configuredSources) {
+    const sourcePages = scoredPages.filter(
+      (page) => page.sourceId === source.id || page.sourceName.startsWith(source.name)
+    );
+
+    const positiveSourcePages = sourcePages.filter((page) => page.score > 0);
+    const candidate = positiveSourcePages[0] ?? sourcePages[0];
+
+    if (candidate && selected.size < MAX_CONTEXT_PAGES) {
+      selected.set(candidate.id, candidate);
+    }
+  }
+
+  for (const page of filtered.length > 0 ? filtered : scoredPages) {
+    if (selected.size >= MAX_CONTEXT_PAGES) break;
+    selected.set(page.id, page);
+  }
+
+  if (selected.size < Math.min(MIN_PAGES_PER_CONFIGURED_SOURCE, configuredSources.length)) {
+    for (const page of scoredPages) {
+      if (selected.size >= MAX_CONTEXT_PAGES) break;
+      selected.set(page.id, page);
+    }
+  }
+
+  return Array.from(selected.values())
+    .sort((a, b) => b.score - a.score)
+    .slice(0, MAX_CONTEXT_PAGES);
 }
 
 async function getNotionContext(question: string): Promise<NotionContextResult> {
@@ -1612,15 +1973,7 @@ async function getNotionContext(question: string): Promise<NotionContextResult> 
   const maxScore = scoredPages[0]?.score ?? 0;
   const minimumScore = maxScore <= 0 ? 0 : Math.max(5, Math.min(22, maxScore * 0.22));
 
-  const filtered =
-    maxScore <= 0
-      ? scoredPages.slice(0, 4)
-      : scoredPages.filter((page) => page.score >= minimumScore);
-
-  const selectedPages = (filtered.length > 0 ? filtered : scoredPages).slice(
-    0,
-    MAX_CONTEXT_PAGES
-  );
+  const selectedPages = selectBalancedPages(scoredPages, sources, maxScore, minimumScore);
 
   const debug = createSearchDebug(
     searchTerms,
@@ -1701,11 +2054,14 @@ ${contextText}
 - 日本語で回答する
 - 初心者向けに、やさしく具体的に説明する
 - Notionマニュアル情報に書かれている内容を最優先する
+- データベースプロパティにある Question / Answer / Program / Category / Keyword / Status / Date / UpdatedAt の内容も、ページ本文と同じ重要度で扱う
 - 複数のNotionナレッジベースに情報がある場合は、どのナレッジベースの情報かを意識して整理する
 - RSJP固有の内容はRSJP Manualを優先し、共通ルールや一般手順はGeneral Manualなどの一般ナレッジも参考にする
+- 日程、開始日、終了日、チェックイン、チェックアウト、費用、支払期限など、確定情報を問う質問では、複数の参照元を照合する
+- 複数のNotion情報に矛盾がある場合は、片方だけを断定せず、「情報に差異があります」と明記し、どのページに何と書かれているかを分けて説明する
+- 日程情報については、Question/Answer型データベースのAnswer欄にある値も必ず確認対象にする
 - 参加対象外、応募資格、参加資格、受入可否、対象学生、eligibility などに関わる質問では、該当ページの根拠がない限り、受入可否を断定しない
 - 参加対象外の学生への案内や例外対応は、原則として課長確認が必要な判断として扱う
-- 複数のNotion情報に矛盾や古い可能性がある場合は断定せず、課長確認または担当部署確認に寄せる
 - Notionマニュアル情報に書かれていない内容は、推測で断定しない
 - 情報が不足している場合は「Notion上では確認できませんでした」と明記する
 - ただし、Notion情報から安全に言える範囲の一般的な流れは「確認が必要な一般的流れ」として分けて書く
