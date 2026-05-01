@@ -1,29 +1,82 @@
 // FILE: api/ask.ts
 // PATH: api/ask.ts
+/// <reference types="node" />
 
-declare const process: {
-  env: Record<string, string | undefined>;
+export const config = {
+  maxDuration: 60,
 };
 
-type AskRequestBody = {
-  question?: string;
-  requestedBy?: string;
-  dataSource?: {
-    provider?: string;
-    notionDatabaseUrl?: string;
-    notionDatabaseUrls?: Array<{ name?: string; url?: string }>;
-    requireLatestIfDuplicated?: boolean;
-  };
-  outputFormat?: Record<string, string>;
-  imageGeneration?: { provider?: string; model?: string };
-  policy?: {
-    beginnerFriendly?: boolean;
-    avoidPersonalDependency?: boolean;
-    includeManagerApprovalGate?: boolean;
-  };
+type RequestLike = {
+  method?: string;
+  body?: unknown;
+  query?: Record<string, string | string[] | undefined>;
 };
 
-type ChecklistItem = { text: string };
+type ResponseLike = {
+  setHeader: (name: string, value: string) => void;
+  status: (statusCode: number) => {
+    json: (payload: unknown) => void;
+    end?: (payload?: string) => void;
+  };
+  json: (payload: unknown) => void;
+  end: (payload?: string) => void;
+};
+
+type NotionProperty = Record<string, any>;
+
+type NotionPage = {
+  id: string;
+  object?: string;
+  url?: string;
+  properties?: Record<string, NotionProperty>;
+  created_time?: string;
+  last_edited_time?: string;
+  archived?: boolean;
+};
+
+type NotionBlock = {
+  id: string;
+  type?: string;
+  has_children?: boolean;
+  [key: string]: any;
+};
+
+type NotionQueryResponse = {
+  results?: unknown[];
+  next_cursor?: string | null;
+  has_more?: boolean;
+};
+
+type SearchDocument = {
+  id: string;
+  title: string;
+  url: string;
+  sourceName: string;
+  sourceEnvName: string;
+  text: string;
+  score: number;
+  lastEditedTime: string;
+};
+
+type KnowledgeBaseDebug = {
+  name: string;
+  envName: string;
+  configured: boolean;
+  fetched: number;
+  selected: number;
+};
+
+type SearchDebug = {
+  query: string;
+  knowledgeBases: KnowledgeBaseDebug[];
+  totalCandidates: number;
+  selectedPages: number;
+  topScore: number;
+  threshold: number;
+  searchTerms: string[];
+  selectedTitles: string[];
+  errors: string[];
+};
 
 type ManagerGate = {
   canProceedAlone: string[];
@@ -32,27 +85,8 @@ type ManagerGate = {
   managerQuestionTemplate: string;
 };
 
-type SearchDebugPage = {
-  title: string;
-  score: number;
-  url?: string;
-  lastEditedTime?: string;
-  contentPreview: string;
-  sourceName: string;
-  sourceType: string;
-};
-
-type SearchDebug = {
-  searchTerms: string[];
-  searchQueries: string[];
-  databasePageCount: number;
-  seedPageCount: number;
-  discoveredPageCount: number;
-  selectedPageCount: number;
-  maxScore: number;
-  minimumScore: number;
-  selectedPages: SearchDebugPage[];
-  sourceCounts: Record<string, number>;
+type ChecklistItem = {
+  text: string;
 };
 
 type AnswerPayload = {
@@ -65,1236 +99,1314 @@ type AnswerPayload = {
   references: string[];
   updatedAt: string;
   oldPolicyNote: string;
-  debug?: { search: SearchDebug };
+  debug: {
+    search: SearchDebug;
+  };
 };
 
-type ApiRequest = { method?: string; body?: AskRequestBody | string };
-
-type ApiResponse = {
-  status: (code: number) => ApiResponse;
-  json: (body: unknown) => void;
-  setHeader: (name: string, value: string) => void;
-};
-
-type NotionPage = {
-  id: string;
-  url?: string;
-  properties?: Record<string, any>;
-  last_edited_time?: string;
-  parent?: { type?: string; database_id?: string; page_id?: string };
-};
-
-type NotionSource = {
-  id: string;
-  name: string;
-  type: "database" | "page" | "search";
-};
-
-type SeedPage = {
-  page: NotionPage;
-  source: NotionSource;
-  parentPath?: string;
-};
-
-type ContextPage = {
-  id: string;
-  title: string;
-  url?: string;
-  lastEditedTime?: string;
-  content: string;
-  propertyText: string;
-  blockText: string;
-  score: number;
-  sourceName: string;
-  sourceId: string;
-  sourceType: "database" | "page" | "search";
-};
-
-const MAX_DATABASE_PAGES = 220;
-const MAX_CONTEXT_PAGES = 10;
-const MAX_SEED_PAGES = 120;
-const MAX_DISCOVERED_PAGES = 160;
-const MAX_BLOCK_PAGES = 4;
-const MAX_PAGE_CONTENT_LENGTH = 6500;
-const MAX_NEST_DEPTH = 2;
-const MAX_SEARCH_QUERIES = 28;
+const NOTION_VERSION = "2022-06-28";
+const MAX_DATABASE_PAGES_PER_DB = 35;
+const MAX_SEARCH_RESULTS = 25;
+const MAX_BLOCK_DEPTH = 2;
+const MAX_CONTEXT_DOCS = 12;
+const MAX_CONTEXT_CHARS_PER_DOC = 1800;
 
 const DEFAULT_MANAGER_GATE: ManagerGate = {
   canProceedAlone: [
-    "Notionに明記された手順を確認する",
-    "事実関係を整理する",
-    "必要情報を洗い出す",
-    "既存テンプレートに沿って下書きを作成する",
-    "参照元とチェックリストを確認する",
-    "課長確認用のメモを作成する",
+    "Notionに明記されている手順や過去の記録を確認する",
+    "必要情報を整理し、関係者へ確認するための下書きを作成する",
+    "チェックリストに沿って、抜け漏れを確認する",
   ],
   needManagerApproval: [
-    "費用、見積、請求、支払方法、支払期限、キャンセル料に関わる判断",
-    "契約、合意書、受入可否、参加対象外への案内に関わる判断",
-    "学内ルールに明記されていない例外対応",
-    "先方へ確約する内容や、相手機関との交渉に関わる内容",
-    "過去対応と異なる判断、部署間調整、トラブル・クレーム対応",
-    "個人情報、アレルギー、医療情報など慎重な取扱いが必要な情報",
+    "費用、見積、請求、支払方法、支払期限に関する判断",
+    "キャンセル料、契約、合意書、受入可否に関する判断",
+    "先方への確約、例外対応、学内ルールにない判断",
+    "トラブル、クレーム、個人情報、アレルギー、医療情報を含む対応",
   ],
   approvalTiming: [
-    "先方へメールや回答を送る前",
-    "金額、日程、受入可否、支払条件などを確定する前",
-    "通常ルールから外れる可能性があるとき",
-    "Notion上の記載だけでは判断できないとき",
-    "自分で判断してよいか少しでも迷ったとき",
+    "相手機関や学内関係者へ確定情報として送信する前",
+    "費用・日程・受入条件に影響する判断を行う前",
+    "Notionの記録と現在の状況に差があると感じた時",
   ],
   managerQuestionTemplate:
-    "以下の件について、Notion上では〇〇と理解しました。\n先方へ回答する前に確認させてください。\nこの理解で進めてよろしいでしょうか。",
+    "以下の件について、Notion上では〇〇と確認しました。今回の状況では△△の判断が必要になる可能性があります。先方へ回答する前に、対応方針をご確認いただけますでしょうか。",
 };
 
-const DOMAIN_TERMS = [
-  "RSJP",
-  "RWJP",
-  "Express",
-  "RDSP",
-  "OIC",
-  "BKC",
-  "衣笠",
-  "セミナーハウス",
-  "バス",
-  "大型バス",
-  "貸切バス",
-  "観光バス",
-  "ヤサカ",
-  "ヤサカ観光",
-  "Coupa",
-  "COUPA",
-  "発注",
-  "業者発注",
-  "発注書",
-  "見積",
-  "見積書",
-  "請求",
-  "請求書",
-  "支払",
-  "支払い",
-  "経理",
-  "Convera",
-  "契約",
-  "合意書",
-  "agreement",
-  "キャンセル",
-  "宿泊",
-  "ホテル",
-  "宿舎",
-  "参加者",
-  "名簿",
-  "フォーム",
-  "学校訪問",
-  "小学校",
-  "給食",
-  "アレルギー",
-  "保険",
-  "ビザ",
-  "査証",
-  "空港",
-  "送迎",
-  "BBP",
-  "KOBO",
-  "交流",
-  "修了証",
-  "参加対象外",
-  "対象外",
-  "対象者",
-  "対象学生",
-  "参加条件",
-  "参加資格",
-  "応募資格",
-  "申込資格",
-  "受入可否",
-  "高校生",
-  "大学生",
-  "大学院生",
-  "eligibility",
-  "eligible",
-  "ineligible",
-  "not eligible",
-  "日程",
-  "期間",
-  "実施期間",
-  "開始日",
-  "終了日",
-  "チェックイン",
-  "チェックアウト",
-  "通学",
-  "通学方法",
-  "交通",
-  "徒歩",
-  "電車",
-  "自転車",
-  "自動車",
-  "Pledge",
-  "誓約書",
-];
+export default async function handler(req: RequestLike, res: ResponseLike): Promise<void> {
+  setCorsHeaders(res);
 
-function parseBody(body: ApiRequest["body"]): AskRequestBody {
-  if (!body) return {};
-  if (typeof body === "string") {
-    try {
-      return JSON.parse(body) as AskRequestBody;
-    } catch {
-      return {};
+  if (req.method === "OPTIONS") {
+    const response = res.status(204);
+    if (response.end) {
+      response.end();
+      return;
     }
-  }
-  return body;
-}
-
-function cleanNotionId(value: string | undefined): string {
-  const cleaned = (value ?? "")
-    .trim()
-    .replace(/-/g, "")
-    .replace(/^https?:\/\/www\.notion\.so\//, "")
-    .split("?")[0]
-    .split("/")
-    .filter(Boolean)
-    .pop();
-
-  return cleaned?.slice(0, 32) ?? "";
-}
-
-function getSources(): NotionSource[] {
-  const sources: NotionSource[] = [];
-  const envSources = [
-    {
-      id: cleanNotionId(process.env.NOTION_DATABASE_ID),
-      name: process.env.NOTION_DATABASE_NAME || "RSJP Manual",
-      type: "database" as const,
-    },
-    {
-      id: cleanNotionId(process.env.NOTION_DATABASE_ID_2),
-      name: process.env.NOTION_DATABASE_NAME_2 || "General Manual",
-      type: "database" as const,
-    },
-    {
-      id: cleanNotionId(process.env.NOTION_DATABASE_ID_3),
-      name: process.env.NOTION_DATABASE_NAME_3 || "RSJP FAQ",
-      type: "database" as const,
-    },
-    {
-      id: cleanNotionId(process.env.NOTION_ROOT_PAGE_ID),
-      name: process.env.NOTION_ROOT_PAGE_NAME || "Root Page Manual",
-      type: "page" as const,
-    },
-    {
-      id: cleanNotionId(process.env.NOTION_ROOT_PAGE_ID_2),
-      name: process.env.NOTION_ROOT_PAGE_NAME_2 || "Additional Root Page",
-      type: "page" as const,
-    },
-  ];
-
-  for (const source of envSources) {
-    if (source.id) sources.push(source);
+    res.end();
+    return;
   }
 
-  const map = new Map<string, NotionSource>();
-  for (const source of sources) {
-    map.set(`${source.type}:${source.id}`, source);
+  if (req.method === "GET") {
+    sendJson(res, 200, {
+      ok: true,
+      name: "RSJP Manual AI API",
+      endpoint: "/api/ask",
+      message: "API Function is available. Please send a POST request with { question: string }.",
+      updatedAt: new Date().toISOString(),
+    });
+    return;
   }
-  return Array.from(map.values());
-}
 
-function getQuestion(body: AskRequestBody): string {
-  const question = body.question?.trim();
-  return question || "質問が入力されていません。";
-}
+  if (req.method !== "POST") {
+    sendJson(res, 405, {
+      ok: false,
+      error: "Method Not Allowed",
+      message: "Please use POST.",
+    });
+    return;
+  }
 
-function extractPlainText(items: any[] | undefined): string {
-  if (!Array.isArray(items)) return "";
-  return items.map((item) => item?.plain_text ?? "").join("").trim();
-}
+  try {
+    const question = getQuestionFromRequest(req);
 
-function extractPageTitle(page: NotionPage): string {
-  const properties = page.properties ?? {};
-  for (const property of Object.values(properties)) {
-    if (property?.type === "title") {
-      const text = extractPlainText(property.title);
-      if (text) return text;
+    if (!question) {
+      sendJson(res, 400, {
+        ok: false,
+        error: "Bad Request",
+        message: "question が空です。",
+      });
+      return;
     }
-  }
-  for (const property of Object.values(properties)) {
-    if (property?.type === "rich_text") {
-      const text = extractPlainText(property.rich_text);
-      if (text) return text;
-    }
-  }
-  return "タイトル未取得";
-}
 
-function propertyToText(property: any): string {
-  if (!property || typeof property !== "object") return "";
-  const type = property.type;
-  switch (type) {
-    case "title":
-      return extractPlainText(property.title);
-    case "rich_text":
-      return extractPlainText(property.rich_text);
-    case "select":
-      return property.select?.name ?? "";
-    case "multi_select":
-      return Array.isArray(property.multi_select)
-        ? property.multi_select.map((item: any) => item?.name).filter(Boolean).join(" / ")
-        : "";
-    case "status":
-      return property.status?.name ?? "";
-    case "date":
-      return [property.date?.start, property.date?.end].filter(Boolean).join(" - ");
-    case "number":
-      return typeof property.number === "number" ? String(property.number) : "";
-    case "checkbox":
-      return typeof property.checkbox === "boolean" ? String(property.checkbox) : "";
-    case "url":
-      return property.url ?? "";
-    case "email":
-      return property.email ?? "";
-    case "phone_number":
-      return property.phone_number ?? "";
-    case "files":
-      return Array.isArray(property.files)
-        ? property.files
-            .map((file: any) => file?.name || file?.file?.url || file?.external?.url)
-            .filter(Boolean)
-            .join(" / ")
-        : "";
-    case "people":
-      return Array.isArray(property.people)
-        ? property.people.map((person: any) => person?.name || person?.person?.email).filter(Boolean).join(" / ")
-        : "";
-    case "created_time":
-      return property.created_time ?? "";
-    case "last_edited_time":
-      return property.last_edited_time ?? "";
-    case "formula": {
-      const formulaType = property.formula?.type;
-      const value = formulaType ? property.formula?.[formulaType] : undefined;
-      if (formulaType === "date") return [value?.start, value?.end].filter(Boolean).join(" - ");
-      return value === undefined || value === null ? "" : String(value);
-    }
-    case "rollup": {
-      const rollupType = property.rollup?.type;
-      const value = rollupType ? property.rollup?.[rollupType] : undefined;
-      if (Array.isArray(value)) {
-        return value.map((item: any) => propertyToText(item)).filter(Boolean).join(" / ");
-      }
-      if (rollupType === "date") return [value?.start, value?.end].filter(Boolean).join(" - ");
-      return value === undefined || value === null ? "" : String(value);
-    }
-    default:
-      return "";
+    const searchResult = await searchNotionKnowledge(question);
+    const answerPayload = await buildAnswer(question, searchResult.documents, searchResult.debug);
+
+    sendJson(res, 200, answerPayload);
+  } catch (error) {
+    const debug = createEmptyDebug("unknown");
+    debug.errors.push(getErrorMessage(error));
+
+    const fallback = createFallbackPayload({
+      question: "unknown",
+      documents: [],
+      debug,
+      note: "API処理中にエラーが発生したため、暫定回答を表示しています。",
+    });
+
+    sendJson(res, 200, fallback);
   }
 }
 
-function extractPropertiesText(page: NotionPage): string {
-  const properties = page.properties ?? {};
-  const priority = [
-    "Question",
-    "質問",
-    "Answer",
-    "回答",
-    "Program",
-    "プログラム",
-    "Category",
-    "カテゴリ",
-    "Keyword",
-    "キーワード",
-    "Status",
-    "ステータス",
-    "SourceURL",
-    "UpdatedAt",
-    "更新日",
-    "Date",
-    "日付",
-  ];
-  const used = new Set<string>();
-  const lines: string[] = [];
-
-  for (const name of priority) {
-    const text = propertyToText(properties[name]);
-    if (text) {
-      lines.push(`${name}: ${text}`);
-      used.add(name);
-    }
-  }
-
-  for (const [name, property] of Object.entries(properties)) {
-    if (used.has(name)) continue;
-    const text = propertyToText(property);
-    if (text) lines.push(`${name}: ${text}`);
-  }
-
-  return lines.join("\n").slice(0, MAX_PAGE_CONTENT_LENGTH);
+function setCorsHeaders(res: ResponseLike): void {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 }
 
-function extractBlockText(block: any): string {
-  const type = block?.type;
-  if (!type) return "";
-  const value = block[type];
-  if (!value) return "";
+function sendJson(res: ResponseLike, statusCode: number, payload: unknown): void {
+  res.status(statusCode).json(payload);
+}
 
-  if (type === "child_page") return `子ページ: ${value.title ?? ""}`;
-  if (type === "child_database") return `子データベース: ${value.title ?? ""}`;
-  if (type === "bookmark" || type === "link_preview") return value.url ?? "";
-  if (type === "file") return value.name ?? value.file?.url ?? value.external?.url ?? "";
-  if (type === "pdf" || type === "video" || type === "image") {
-    return extractPlainText(value.caption) || value.name || value.file?.url || value.external?.url || "";
+function getQuestionFromRequest(req: RequestLike): string {
+  const body = parseBody(req.body);
+
+  if (body && typeof body.question === "string") {
+    return body.question.trim();
   }
-  if (type === "to_do") return `${value.checked ? "[x]" : "[ ]"} ${extractPlainText(value.rich_text)}`;
-  if (type === "table_row" && Array.isArray(value.cells)) {
-    return value.cells.map((cell: any[]) => extractPlainText(cell)).filter(Boolean).join(" | ");
+
+  if (body && typeof body.query === "string") {
+    return body.query.trim();
   }
-  if (Array.isArray(value.rich_text)) return extractPlainText(value.rich_text);
-  if (Array.isArray(value.caption)) return extractPlainText(value.caption);
+
+  if (req.query && typeof req.query.question === "string") {
+    return req.query.question.trim();
+  }
+
   return "";
 }
 
-function normalizeText(value: string): string {
-  return value
-    .toLowerCase()
-    .replace(/[、。！？!?,.()[\]【】「」『』]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+function parseBody(body: unknown): Record<string, any> | null {
+  if (!body) {
+    return null;
+  }
+
+  if (typeof body === "string") {
+    try {
+      const parsed = JSON.parse(body);
+      if (parsed && typeof parsed === "object") {
+        return parsed as Record<string, any>;
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  if (typeof body === "object") {
+    return body as Record<string, any>;
+  }
+
+  return null;
 }
 
-function stripListPrefix(value: string): string {
-  return value
-    .replace(/^\s*(\d+[\.)]|[０-９]+[．.)）]|[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳]|[-・●■])\s*/g, "")
-    .trim();
-}
+async function searchNotionKnowledge(question: string): Promise<{
+  documents: SearchDocument[];
+  debug: SearchDebug;
+}> {
+  const debug = createEmptyDebug(question);
+  const notionApiKey = getEnv("NOTION_API_KEY");
 
-function hasAny(question: string, terms: string[]): boolean {
-  const raw = question.toLowerCase();
-  const normalized = normalizeText(question);
-  return terms.some((term) => raw.includes(term.toLowerCase()) || normalized.includes(normalizeText(term)));
-}
-
-function buildSearchTerms(question: string): string[] {
-  const roughTerms = normalizeText(question)
-    .split(" ")
-    .map((term) => term.trim())
-    .filter((term) => term.length >= 2)
-    .filter((term) => !["初心者", "向け", "説明", "してください", "教えて", "方法", "流れ", "手順"].includes(term));
-
-  const matched = DOMAIN_TERMS.filter((term) => hasAny(question, [term]));
-  const expanded: string[] = [];
-
-  if (question.includes("バス")) {
-    expanded.push("大型バス", "貸切バス", "ヤサカ観光", "業者発注", "見積", "発注書", "納品書", "請求書", "Coupa");
-  }
-  if (question.includes("発注")) {
-    expanded.push("業者発注", "発注書", "見積もり依頼", "Coupa", "フォローオン", "納品書", "請求書");
-  }
-  if (question.includes("支払") || question.includes("請求")) {
-    expanded.push("経理", "支払", "請求書", "インボイス", "Convera", "納品書", "業務完了報告書");
-  }
-  if (question.includes("契約") || question.includes("合意書") || question.toLowerCase().includes("agreement")) {
-    expanded.push("契約", "合意書", "agreement", "支払", "キャンセル", "個人情報", "保険");
-  }
-  if (question.includes("アレルギー") || question.includes("給食") || question.includes("学校")) {
-    expanded.push("学校訪問", "小学校", "給食", "アレルギー", "参加者", "名簿", "フォーム");
-  }
-  if (question.includes("通学") || question.includes("交通") || question.includes("徒歩") || question.includes("自転車")) {
-    expanded.push("通学", "通学方法", "交通手段", "徒歩", "バス", "電車", "自転車", "自動車", "Pledge", "誓約書", "禁止");
+  if (!notionApiKey) {
+    debug.errors.push("NOTION_API_KEY が設定されていません。");
+    return { documents: [], debug };
   }
 
-  return Array.from(new Set([...matched, ...expanded, ...roughTerms])).filter(Boolean);
-}
+  const searchTerms = createSearchTerms(question);
+  debug.searchTerms = searchTerms;
 
-function buildSearchQueries(question: string, terms: string[]): string[] {
-  const queries = [question];
-  if (question.includes("バス")) queries.push("大型バス 発注", "ヤサカ観光", "Coupa 見積 バス");
-  if (question.includes("発注")) queries.push("業者発注", "発注書", "見積もり依頼", "Coupaフォローオン");
-  if (question.includes("支払") || question.includes("請求")) queries.push("経理 支払", "請求書", "納品書", "Convera");
-  if (question.includes("契約") || question.includes("合意書")) queries.push("契約", "合意書", "agreement", "キャンセル");
-  if (hasAny(question, ["対象外", "参加資格", "応募資格", "高校生", "eligibility"])) {
-    queries.push("参加対象外 対応", "参加資格 対象学生", "高校生 対象外", "eligibility eligible ineligible");
+  const databaseConfigs = [
+    {
+      name: "Main Manual Database",
+      envName: "NOTION_DATABASE_ID",
+      id: getEnv("NOTION_DATABASE_ID"),
+    },
+    {
+      name: "Sub Manual Database 2",
+      envName: "NOTION_DATABASE_ID_2",
+      id: getEnv("NOTION_DATABASE_ID_2"),
+    },
+    {
+      name: "Sub Manual Database 3",
+      envName: "NOTION_DATABASE_ID_3",
+      id: getEnv("NOTION_DATABASE_ID_3"),
+    },
+  ];
+
+  const rootPageConfigs = [
+    {
+      name: "Root Page 1",
+      envName: "NOTION_ROOT_PAGE_ID",
+      id: getEnv("NOTION_ROOT_PAGE_ID"),
+    },
+    {
+      name: "Root Page 2",
+      envName: "NOTION_ROOT_PAGE_ID_2",
+      id: getEnv("NOTION_ROOT_PAGE_ID_2"),
+    },
+  ];
+
+  const allDocuments: SearchDocument[] = [];
+
+  for (const configItem of databaseConfigs) {
+    const kbDebug: KnowledgeBaseDebug = {
+      name: configItem.name,
+      envName: configItem.envName,
+      configured: Boolean(configItem.id),
+      fetched: 0,
+      selected: 0,
+    };
+
+    if (!configItem.id) {
+      debug.knowledgeBases.push(kbDebug);
+      continue;
+    }
+
+    try {
+      const pages = await queryDatabasePages(configItem.id);
+      kbDebug.fetched = pages.length;
+
+      const docs = await enrichPagesToDocuments({
+        pages,
+        sourceName: configItem.name,
+        sourceEnvName: configItem.envName,
+        searchTerms,
+      });
+
+      kbDebug.selected = docs.filter((doc) => doc.score > 0).length;
+      allDocuments.push(...docs);
+    } catch (error) {
+      debug.errors.push(`${configItem.envName}: ${getErrorMessage(error)}`);
+    }
+
+    debug.knowledgeBases.push(kbDebug);
   }
-  if (hasAny(question, ["日程", "期間", "開始日", "終了日", "チェックイン", "チェックアウト"])) {
-    queries.push("RSJP 日程", "2026 RSJP 日程", "開始日 終了日", "チェックイン チェックアウト");
+
+  for (const configItem of rootPageConfigs) {
+    const kbDebug: KnowledgeBaseDebug = {
+      name: configItem.name,
+      envName: configItem.envName,
+      configured: Boolean(configItem.id),
+      fetched: 0,
+      selected: 0,
+    };
+
+    if (!configItem.id) {
+      debug.knowledgeBases.push(kbDebug);
+      continue;
+    }
+
+    try {
+      const rootDoc = await readRootPageDocument({
+        pageId: configItem.id,
+        sourceName: configItem.name,
+        sourceEnvName: configItem.envName,
+        searchTerms,
+      });
+
+      if (rootDoc) {
+        kbDebug.fetched = 1;
+        kbDebug.selected = rootDoc.score > 0 ? 1 : 0;
+        allDocuments.push(rootDoc);
+      }
+    } catch (error) {
+      debug.errors.push(`${configItem.envName}: ${getErrorMessage(error)}`);
+    }
+
+    debug.knowledgeBases.push(kbDebug);
   }
-  if (hasAny(question, ["通学", "交通", "徒歩", "自転車", "自動車", "Pledge"])) {
-    queries.push("大学への通学方法", "通学 交通手段", "自転車 自動車 禁止", "Pledge 通学");
-  }
-  queries.push(...terms.slice(0, 18));
-  return Array.from(new Set(queries.map((query) => query.trim()).filter(Boolean))).slice(0, MAX_SEARCH_QUERIES);
-}
 
-function scorePage(question: string, page: ContextPage): number {
-  const terms = buildSearchTerms(question).map(normalizeText).filter(Boolean);
-  const q = normalizeText(question);
-  const title = normalizeText(page.title);
-  const content = normalizeText(page.content);
-  const propertyText = normalizeText(page.propertyText);
-  const sourceName = normalizeText(page.sourceName);
-  let score = 0;
-
-  if (title.includes(q)) score += 45;
-  if (propertyText.includes(q)) score += 40;
-  if (content.includes(q)) score += 24;
-
-  for (const term of terms) {
-    if (title.includes(term)) score += 20;
-    if (propertyText.includes(term)) score += 14;
-    if (content.includes(term)) score += 5;
+  try {
+    const notionSearchPages = await searchPagesByNotionSearch(question);
+    const notionSearchDocs = await enrichPagesToDocuments({
+      pages: notionSearchPages,
+      sourceName: "Notion Search API",
+      sourceEnvName: "NOTION_SEARCH",
+      searchTerms,
+    });
+    allDocuments.push(...notionSearchDocs);
+  } catch (error) {
+    debug.errors.push(`Notion Search API: ${getErrorMessage(error)}`);
   }
 
-  const faqQuestion = hasAny(question, ["対象外", "参加資格", "応募資格", "高校生", "日程", "通学", "交通", "eligibility"]);
-  const riskyQuestion = hasAny(question, ["費用", "見積", "請求", "支払", "契約", "合意書", "対象外", "例外", "アレルギー", "医療"]);
+  const deduped = dedupeDocuments(allDocuments);
+  const rescored = deduped
+    .map((doc) => ({
+      ...doc,
+      score: scoreDocument(doc, question, searchTerms),
+    }))
+    .sort((a, b) => b.score - a.score);
 
-  if (faqQuestion && (sourceName.includes("faq") || sourceName.includes("qa") || sourceName.includes("general"))) score += 18;
-  if (propertyText.includes("answer:") || propertyText.includes("回答:")) score += 12;
-  if (riskyQuestion && propertyText) score += 6;
-  if (page.lastEditedTime) score += 0.5;
+  const topScore = rescored.length > 0 ? rescored[0].score : 0;
+  const threshold = Math.max(3, Math.floor(topScore * 0.18));
+  const selected = rescored
+    .filter((doc) => doc.score >= threshold || doc.score > 0)
+    .slice(0, MAX_CONTEXT_DOCS);
 
-  const finalTitle = title.split(">").map((item) => item.trim()).filter(Boolean).pop();
-  if (finalTitle && ["はじめに", "緊急連絡先", "ホーム", "目次", "使ってみる"].includes(finalTitle)) {
-    score -= 16;
-  }
-  if (!terms.some((term) => title.includes(term))) score -= 2;
-  if (!terms.some((term) => content.includes(term))) score -= 2;
+  debug.totalCandidates = rescored.length;
+  debug.selectedPages = selected.length;
+  debug.topScore = topScore;
+  debug.threshold = threshold;
+  debug.selectedTitles = selected.map((doc) => `${doc.title} (${doc.sourceEnvName}: ${doc.score})`);
 
-  return Math.round(score * 10) / 10;
-}
-
-function createEmptyDebug(): SearchDebug {
   return {
+    documents: selected,
+    debug,
+  };
+}
+
+function createEmptyDebug(query: string): SearchDebug {
+  return {
+    query,
+    knowledgeBases: [],
+    totalCandidates: 0,
+    selectedPages: 0,
+    topScore: 0,
+    threshold: 0,
     searchTerms: [],
-    searchQueries: [],
-    databasePageCount: 0,
-    seedPageCount: 0,
-    discoveredPageCount: 0,
-    selectedPageCount: 0,
-    maxScore: 0,
-    minimumScore: 0,
-    selectedPages: [],
-    sourceCounts: {},
+    selectedTitles: [],
+    errors: [],
   };
 }
 
-function createDebug(
-  searchTerms: string[],
-  searchQueries: string[],
-  databasePageCount: number,
-  seedPageCount: number,
-  discoveredPages: ContextPage[],
-  selectedPages: ContextPage[],
-  sources: NotionSource[],
-  maxScore: number,
-  minimumScore: number
-): SearchDebug {
-  const sourceCounts = sources.reduce<Record<string, number>>((counts, source) => {
-    counts[source.name] = 0;
-    return counts;
-  }, {});
+async function queryDatabasePages(databaseId: string): Promise<NotionPage[]> {
+  const pages: NotionPage[] = [];
+  let cursor: string | null = null;
 
-  for (const page of discoveredPages) {
-    sourceCounts[page.sourceName] = (sourceCounts[page.sourceName] ?? 0) + 1;
+  while (pages.length < MAX_DATABASE_PAGES_PER_DB) {
+    const body: Record<string, unknown> = {
+      page_size: Math.min(25, MAX_DATABASE_PAGES_PER_DB - pages.length),
+    };
+
+    if (cursor) {
+      body.start_cursor = cursor;
+    }
+
+    const response = await notionFetch<NotionQueryResponse>(
+      `/databases/${cleanNotionId(databaseId)}/query`,
+      "POST",
+      body
+    );
+
+    const results = Array.isArray(response.results) ? response.results : [];
+
+    for (const item of results) {
+      if (isNotionPage(item)) {
+        pages.push(item);
+      }
+    }
+
+    if (!response.has_more || !response.next_cursor) {
+      break;
+    }
+
+    cursor = response.next_cursor;
   }
 
-  return {
-    searchTerms,
-    searchQueries,
-    databasePageCount,
-    seedPageCount,
-    discoveredPageCount: discoveredPages.length,
-    selectedPageCount: selectedPages.length,
-    maxScore,
-    minimumScore,
-    selectedPages: selectedPages.map((page, index) => ({
-      title: `${page.sourceName} > ${page.title}`,
-      score: page.score,
-      url: page.url,
-      lastEditedTime: page.lastEditedTime,
-      contentPreview: (page.content || page.propertyText || page.blockText || "").replace(/\s+/g, " ").slice(0, 320),
-      sourceName: page.sourceName,
-      sourceType: page.sourceType,
-    })),
-    sourceCounts,
-  };
+  return pages;
 }
 
-function fallbackPayload(message: string, debug?: SearchDebug): AnswerPayload {
-  const steps = [
-    "VercelのEnvironment Variablesを確認する",
-    "NOTION_API_KEY と NOTION_DATABASE_ID を確認する",
-    "必要に応じて NOTION_DATABASE_ID_2 と NOTION_DATABASE_ID_3 を確認する",
-    "Notion DBがRSJP Manual AIに共有されているか確認する",
-    "GitHubへcommit / pushする",
-    "Vercelで再デプロイする",
-    "もう一度質問を送信する",
-  ];
-  const checklist = [
-    { text: "NOTION_API_KEYが設定されている" },
-    { text: "NOTION_DATABASE_IDが設定されている" },
-    { text: "NOTION_DATABASE_ID_2 と NOTION_DATABASE_ID_3 が必要に応じて設定されている" },
-    { text: "Notion DBをIntegrationに共有している" },
-    { text: "OPENAI_API_KEYが設定されている" },
-    { text: "Vercelの最新デプロイが成功している" },
-  ];
+async function searchPagesByNotionSearch(question: string): Promise<NotionPage[]> {
+  const response = await notionFetch<NotionQueryResponse>("/search", "POST", {
+    query: question,
+    page_size: MAX_SEARCH_RESULTS,
+    filter: {
+      property: "object",
+      value: "page",
+    },
+    sort: {
+      direction: "descending",
+      timestamp: "last_edited_time",
+    },
+  });
 
-  return {
-    answer: message,
-    managerGate: DEFAULT_MANAGER_GATE,
-    steps,
-    checklist,
-    imagePrompt: buildImagePrompt("API接続確認", steps, checklist),
-    imageUrl: "",
-    references: ["Notion / OpenAI API接続確認"],
-    updatedAt: new Date().toISOString(),
-    oldPolicyNote: "Notion APIまたはOpenAI APIの接続確認中のため、過去運用との差分確認は未実施です。",
-    debug: { search: debug ?? createEmptyDebug() },
-  };
+  const results = Array.isArray(response.results) ? response.results : [];
+  return results.filter(isNotionPage);
 }
-// FILE: api/ask.ts
-// PATH: api/ask.ts
 
-declare const process: {
-  env: Record<string, string | undefined>;
-};
-
-type AskRequestBody = {
-  question?: string;
-  requestedBy?: string;
-  dataSource?: {
-    provider?: string;
-    notionDatabaseUrl?: string;
-    notionDatabaseUrls?: Array<{ name?: string; url?: string }>;
-    requireLatestIfDuplicated?: boolean;
-  };
-  outputFormat?: Record<string, string>;
-  imageGeneration?: { provider?: string; model?: string };
-  policy?: {
-    beginnerFriendly?: boolean;
-    avoidPersonalDependency?: boolean;
-    includeManagerApprovalGate?: boolean;
-  };
-};
-
-type ChecklistItem = { text: string };
-
-type ManagerGate = {
-  canProceedAlone: string[];
-  needManagerApproval: string[];
-  approvalTiming: string[];
-  managerQuestionTemplate: string;
-};
-
-type SearchDebugPage = {
-  title: string;
-  score: number;
-  url?: string;
-  lastEditedTime?: string;
-  contentPreview: string;
+async function enrichPagesToDocuments(args: {
+  pages: NotionPage[];
   sourceName: string;
-  sourceType: string;
-};
-
-type SearchDebug = {
+  sourceEnvName: string;
   searchTerms: string[];
-  searchQueries: string[];
-  databasePageCount: number;
-  seedPageCount: number;
-  discoveredPageCount: number;
-  selectedPageCount: number;
-  maxScore: number;
-  minimumScore: number;
-  selectedPages: SearchDebugPage[];
-  sourceCounts: Record<string, number>;
-};
+}): Promise<SearchDocument[]> {
+  const documents: SearchDocument[] = [];
 
-type AnswerPayload = {
-  answer: string;
-  managerGate: ManagerGate;
-  steps: string[];
-  checklist: ChecklistItem[];
-  imagePrompt: string;
-  imageUrl: string;
-  references: string[];
-  updatedAt: string;
-  oldPolicyNote: string;
-  debug?: { search: SearchDebug };
-};
-
-type ApiRequest = { method?: string; body?: AskRequestBody | string };
-
-type ApiResponse = {
-  status: (code: number) => ApiResponse;
-  json: (body: unknown) => void;
-  setHeader: (name: string, value: string) => void;
-};
-
-type NotionPage = {
-  id: string;
-  url?: string;
-  properties?: Record<string, any>;
-  last_edited_time?: string;
-  parent?: { type?: string; database_id?: string; page_id?: string };
-};
-
-type NotionSource = {
-  id: string;
-  name: string;
-  type: "database" | "page" | "search";
-};
-
-type SeedPage = {
-  page: NotionPage;
-  source: NotionSource;
-  parentPath?: string;
-};
-
-type ContextPage = {
-  id: string;
-  title: string;
-  url?: string;
-  lastEditedTime?: string;
-  content: string;
-  propertyText: string;
-  blockText: string;
-  score: number;
-  sourceName: string;
-  sourceId: string;
-  sourceType: "database" | "page" | "search";
-};
-
-const MAX_DATABASE_PAGES = 220;
-const MAX_CONTEXT_PAGES = 10;
-const MAX_SEED_PAGES = 120;
-const MAX_DISCOVERED_PAGES = 160;
-const MAX_BLOCK_PAGES = 4;
-const MAX_PAGE_CONTENT_LENGTH = 6500;
-const MAX_NEST_DEPTH = 2;
-const MAX_SEARCH_QUERIES = 28;
-
-const DEFAULT_MANAGER_GATE: ManagerGate = {
-  canProceedAlone: [
-    "Notionに明記された手順を確認する",
-    "事実関係を整理する",
-    "必要情報を洗い出す",
-    "既存テンプレートに沿って下書きを作成する",
-    "参照元とチェックリストを確認する",
-    "課長確認用のメモを作成する",
-  ],
-  needManagerApproval: [
-    "費用、見積、請求、支払方法、支払期限、キャンセル料に関わる判断",
-    "契約、合意書、受入可否、参加対象外への案内に関わる判断",
-    "学内ルールに明記されていない例外対応",
-    "先方へ確約する内容や、相手機関との交渉に関わる内容",
-    "過去対応と異なる判断、部署間調整、トラブル・クレーム対応",
-    "個人情報、アレルギー、医療情報など慎重な取扱いが必要な情報",
-  ],
-  approvalTiming: [
-    "先方へメールや回答を送る前",
-    "金額、日程、受入可否、支払条件などを確定する前",
-    "通常ルールから外れる可能性があるとき",
-    "Notion上の記載だけでは判断できないとき",
-    "自分で判断してよいか少しでも迷ったとき",
-  ],
-  managerQuestionTemplate:
-    "以下の件について、Notion上では〇〇と理解しました。\n先方へ回答する前に確認させてください。\nこの理解で進めてよろしいでしょうか。",
-};
-
-const DOMAIN_TERMS = [
-  "RSJP",
-  "RWJP",
-  "Express",
-  "RDSP",
-  "OIC",
-  "BKC",
-  "衣笠",
-  "セミナーハウス",
-  "バス",
-  "大型バス",
-  "貸切バス",
-  "観光バス",
-  "ヤサカ",
-  "ヤサカ観光",
-  "Coupa",
-  "COUPA",
-  "発注",
-  "業者発注",
-  "発注書",
-  "見積",
-  "見積書",
-  "請求",
-  "請求書",
-  "支払",
-  "支払い",
-  "経理",
-  "Convera",
-  "契約",
-  "合意書",
-  "agreement",
-  "キャンセル",
-  "宿泊",
-  "ホテル",
-  "宿舎",
-  "参加者",
-  "名簿",
-  "フォーム",
-  "学校訪問",
-  "小学校",
-  "給食",
-  "アレルギー",
-  "保険",
-  "ビザ",
-  "査証",
-  "空港",
-  "送迎",
-  "BBP",
-  "KOBO",
-  "交流",
-  "修了証",
-  "参加対象外",
-  "対象外",
-  "対象者",
-  "対象学生",
-  "参加条件",
-  "参加資格",
-  "応募資格",
-  "申込資格",
-  "受入可否",
-  "高校生",
-  "大学生",
-  "大学院生",
-  "eligibility",
-  "eligible",
-  "ineligible",
-  "not eligible",
-  "日程",
-  "期間",
-  "実施期間",
-  "開始日",
-  "終了日",
-  "チェックイン",
-  "チェックアウト",
-  "通学",
-  "通学方法",
-  "交通",
-  "徒歩",
-  "電車",
-  "自転車",
-  "自動車",
-  "Pledge",
-  "誓約書",
-];
-
-function parseBody(body: ApiRequest["body"]): AskRequestBody {
-  if (!body) return {};
-  if (typeof body === "string") {
+  for (const page of args.pages) {
     try {
-      return JSON.parse(body) as AskRequestBody;
-    } catch {
-      return {};
+      const title = getPageTitle(page);
+      const propertyText = getPropertyText(page.properties || {});
+      const blockText = await readBlockText(page.id, 0);
+      const text = [propertyText, blockText].filter(Boolean).join("\n\n").trim();
+
+      const document: SearchDocument = {
+        id: page.id,
+        title,
+        url: page.url || "",
+        sourceName: args.sourceName,
+        sourceEnvName: args.sourceEnvName,
+        text,
+        score: 0,
+        lastEditedTime: page.last_edited_time || page.created_time || "",
+      };
+
+      document.score = scoreDocument(document, "", args.searchTerms);
+      documents.push(document);
+    } catch (error) {
+      documents.push({
+        id: page.id,
+        title: getPageTitle(page),
+        url: page.url || "",
+        sourceName: args.sourceName,
+        sourceEnvName: args.sourceEnvName,
+        text: `ページ本文の取得中にエラーが発生しました: ${getErrorMessage(error)}`,
+        score: 0,
+        lastEditedTime: page.last_edited_time || page.created_time || "",
+      });
     }
   }
-  return body;
+
+  return documents;
 }
 
-function cleanNotionId(value: string | undefined): string {
-  const cleaned = (value ?? "")
-    .trim()
-    .replace(/-/g, "")
-    .replace(/^https?:\/\/www\.notion\.so\//, "")
-    .split("?")[0]
-    .split("/")
-    .filter(Boolean)
-    .pop();
+async function readRootPageDocument(args: {
+  pageId: string;
+  sourceName: string;
+  sourceEnvName: string;
+  searchTerms: string[];
+}): Promise<SearchDocument | null> {
+  const page = await notionFetch<NotionPage>(`/pages/${cleanNotionId(args.pageId)}`, "GET");
+  const title = getPageTitle(page);
+  const propertyText = getPropertyText(page.properties || {});
+  const blockText = await readBlockText(args.pageId, 0);
+  const text = [propertyText, blockText].filter(Boolean).join("\n\n").trim();
 
-  return cleaned?.slice(0, 32) ?? "";
+  const document: SearchDocument = {
+    id: args.pageId,
+    title,
+    url: page.url || "",
+    sourceName: args.sourceName,
+    sourceEnvName: args.sourceEnvName,
+    text,
+    score: 0,
+    lastEditedTime: page.last_edited_time || page.created_time || "",
+  };
+
+  document.score = scoreDocument(document, "", args.searchTerms);
+  return document;
 }
 
-function getSources(): NotionSource[] {
-  const sources: NotionSource[] = [];
-  const envSources = [
-    {
-      id: cleanNotionId(process.env.NOTION_DATABASE_ID),
-      name: process.env.NOTION_DATABASE_NAME || "RSJP Manual",
-      type: "database" as const,
-    },
-    {
-      id: cleanNotionId(process.env.NOTION_DATABASE_ID_2),
-      name: process.env.NOTION_DATABASE_NAME_2 || "General Manual",
-      type: "database" as const,
-    },
-    {
-      id: cleanNotionId(process.env.NOTION_DATABASE_ID_3),
-      name: process.env.NOTION_DATABASE_NAME_3 || "RSJP FAQ",
-      type: "database" as const,
-    },
-    {
-      id: cleanNotionId(process.env.NOTION_ROOT_PAGE_ID),
-      name: process.env.NOTION_ROOT_PAGE_NAME || "Root Page Manual",
-      type: "page" as const,
-    },
-    {
-      id: cleanNotionId(process.env.NOTION_ROOT_PAGE_ID_2),
-      name: process.env.NOTION_ROOT_PAGE_NAME_2 || "Additional Root Page",
-      type: "page" as const,
-    },
-  ];
-
-  for (const source of envSources) {
-    if (source.id) sources.push(source);
+async function readBlockText(blockId: string, depth: number): Promise<string> {
+  if (depth > MAX_BLOCK_DEPTH) {
+    return "";
   }
 
-  const map = new Map<string, NotionSource>();
-  for (const source of sources) {
-    map.set(`${source.type}:${source.id}`, source);
-  }
-  return Array.from(map.values());
-}
+  const lines: string[] = [];
+  let cursor: string | null = null;
 
-function getQuestion(body: AskRequestBody): string {
-  const question = body.question?.trim();
-  return question || "質問が入力されていません。";
-}
+  do {
+    const path = cursor
+      ? `/blocks/${cleanNotionId(blockId)}/children?page_size=100&start_cursor=${encodeURIComponent(cursor)}`
+      : `/blocks/${cleanNotionId(blockId)}/children?page_size=100`;
 
-function extractPlainText(items: any[] | undefined): string {
-  if (!Array.isArray(items)) return "";
-  return items.map((item) => item?.plain_text ?? "").join("").trim();
-}
+    const response = await notionFetch<NotionQueryResponse>(path, "GET");
+    const blocks = Array.isArray(response.results) ? response.results.filter(isNotionBlock) : [];
 
-function extractPageTitle(page: NotionPage): string {
-  const properties = page.properties ?? {};
-  for (const property of Object.values(properties)) {
-    if (property?.type === "title") {
-      const text = extractPlainText(property.title);
-      if (text) return text;
-    }
-  }
-  for (const property of Object.values(properties)) {
-    if (property?.type === "rich_text") {
-      const text = extractPlainText(property.rich_text);
-      if (text) return text;
-    }
-  }
-  return "タイトル未取得";
-}
-
-function propertyToText(property: any): string {
-  if (!property || typeof property !== "object") return "";
-  const type = property.type;
-  switch (type) {
-    case "title":
-      return extractPlainText(property.title);
-    case "rich_text":
-      return extractPlainText(property.rich_text);
-    case "select":
-      return property.select?.name ?? "";
-    case "multi_select":
-      return Array.isArray(property.multi_select)
-        ? property.multi_select.map((item: any) => item?.name).filter(Boolean).join(" / ")
-        : "";
-    case "status":
-      return property.status?.name ?? "";
-    case "date":
-      return [property.date?.start, property.date?.end].filter(Boolean).join(" - ");
-    case "number":
-      return typeof property.number === "number" ? String(property.number) : "";
-    case "checkbox":
-      return typeof property.checkbox === "boolean" ? String(property.checkbox) : "";
-    case "url":
-      return property.url ?? "";
-    case "email":
-      return property.email ?? "";
-    case "phone_number":
-      return property.phone_number ?? "";
-    case "files":
-      return Array.isArray(property.files)
-        ? property.files
-            .map((file: any) => file?.name || file?.file?.url || file?.external?.url)
-            .filter(Boolean)
-            .join(" / ")
-        : "";
-    case "people":
-      return Array.isArray(property.people)
-        ? property.people.map((person: any) => person?.name || person?.person?.email).filter(Boolean).join(" / ")
-        : "";
-    case "created_time":
-      return property.created_time ?? "";
-    case "last_edited_time":
-      return property.last_edited_time ?? "";
-    case "formula": {
-      const formulaType = property.formula?.type;
-      const value = formulaType ? property.formula?.[formulaType] : undefined;
-      if (formulaType === "date") return [value?.start, value?.end].filter(Boolean).join(" - ");
-      return value === undefined || value === null ? "" : String(value);
-    }
-    case "rollup": {
-      const rollupType = property.rollup?.type;
-      const value = rollupType ? property.rollup?.[rollupType] : undefined;
-      if (Array.isArray(value)) {
-        return value.map((item: any) => propertyToText(item)).filter(Boolean).join(" / ");
+    for (const block of blocks) {
+      const line = getBlockPlainText(block);
+      if (line) {
+        lines.push(line);
       }
-      if (rollupType === "date") return [value?.start, value?.end].filter(Boolean).join(" - ");
-      return value === undefined || value === null ? "" : String(value);
+
+      if (block.has_children && depth < MAX_BLOCK_DEPTH) {
+        const childText = await readBlockText(block.id, depth + 1);
+        if (childText) {
+          lines.push(childText);
+        }
+      }
     }
-    default:
-      return "";
-  }
+
+    cursor = response.has_more && response.next_cursor ? response.next_cursor : null;
+  } while (cursor);
+
+  return lines.join("\n").trim();
 }
 
-function extractPropertiesText(page: NotionPage): string {
-  const properties = page.properties ?? {};
-  const priority = [
-    "Question",
-    "質問",
-    "Answer",
-    "回答",
-    "Program",
-    "プログラム",
-    "Category",
-    "カテゴリ",
-    "Keyword",
-    "キーワード",
-    "Status",
-    "ステータス",
-    "SourceURL",
-    "UpdatedAt",
-    "更新日",
-    "Date",
-    "日付",
-  ];
-  const used = new Set<string>();
+function getBlockPlainText(block: NotionBlock): string {
+  const type = block.type || "";
+  const value = block[type];
+
+  if (!value || typeof value !== "object") {
+    return "";
+  }
+
+  if (type === "child_page" && typeof value.title === "string") {
+    return `子ページ: ${value.title}`;
+  }
+
+  if (type === "child_database" && typeof value.title === "string") {
+    return `子データベース: ${value.title}`;
+  }
+
+  if (type === "to_do") {
+    const text = richTextToPlain(value.rich_text);
+    return text ? `□ ${text}` : "";
+  }
+
+  if (type === "bulleted_list_item") {
+    const text = richTextToPlain(value.rich_text);
+    return text ? `・${text}` : "";
+  }
+
+  if (type === "numbered_list_item") {
+    const text = richTextToPlain(value.rich_text);
+    return text ? `1. ${text}` : "";
+  }
+
+  if (type === "table_row" && Array.isArray(value.cells)) {
+    return value.cells
+      .map((cell: unknown) => richTextToPlain(cell))
+      .filter(Boolean)
+      .join(" / ");
+  }
+
+  return richTextToPlain(value.rich_text);
+}
+
+function getPageTitle(page: NotionPage): string {
+  const properties = page.properties || {};
+
+  for (const property of Object.values(properties)) {
+    if (property && property.type === "title") {
+      const title = richTextToPlain(property.title);
+      if (title) {
+        return title;
+      }
+    }
+  }
+
+  const nameProperty = properties.Name || properties.name || properties.名前 || properties.Title || properties.title;
+
+  if (nameProperty) {
+    const title =
+      richTextToPlain(nameProperty.title) ||
+      richTextToPlain(nameProperty.rich_text) ||
+      String(nameProperty.plain_text || "").trim();
+
+    if (title) {
+      return title;
+    }
+  }
+
+  return "Untitled";
+}
+
+function getPropertyText(properties: Record<string, NotionProperty>): string {
   const lines: string[] = [];
 
-  for (const name of priority) {
-    const text = propertyToText(properties[name]);
-    if (text) {
-      lines.push(`${name}: ${text}`);
-      used.add(name);
+  for (const [key, property] of Object.entries(properties)) {
+    const value = getPropertyValueText(property);
+    if (value) {
+      lines.push(`${key}: ${value}`);
     }
   }
 
-  for (const [name, property] of Object.entries(properties)) {
-    if (used.has(name)) continue;
-    const text = propertyToText(property);
-    if (text) lines.push(`${name}: ${text}`);
-  }
-
-  return lines.join("\n").slice(0, MAX_PAGE_CONTENT_LENGTH);
+  return lines.join("\n");
 }
 
-function extractBlockText(block: any): string {
-  const type = block?.type;
-  if (!type) return "";
-  const value = block[type];
-  if (!value) return "";
+function getPropertyValueText(property: NotionProperty): string {
+  const type = property.type;
 
-  if (type === "child_page") return `子ページ: ${value.title ?? ""}`;
-  if (type === "child_database") return `子データベース: ${value.title ?? ""}`;
-  if (type === "bookmark" || type === "link_preview") return value.url ?? "";
-  if (type === "file") return value.name ?? value.file?.url ?? value.external?.url ?? "";
-  if (type === "pdf" || type === "video" || type === "image") {
-    return extractPlainText(value.caption) || value.name || value.file?.url || value.external?.url || "";
+  if (!type) {
+    return "";
   }
-  if (type === "to_do") return `${value.checked ? "[x]" : "[ ]"} ${extractPlainText(value.rich_text)}`;
-  if (type === "table_row" && Array.isArray(value.cells)) {
-    return value.cells.map((cell: any[]) => extractPlainText(cell)).filter(Boolean).join(" | ");
+
+  if (type === "title") {
+    return richTextToPlain(property.title);
   }
-  if (Array.isArray(value.rich_text)) return extractPlainText(value.rich_text);
-  if (Array.isArray(value.caption)) return extractPlainText(value.caption);
+
+  if (type === "rich_text") {
+    return richTextToPlain(property.rich_text);
+  }
+
+  if (type === "select") {
+    return property.select?.name || "";
+  }
+
+  if (type === "status") {
+    return property.status?.name || "";
+  }
+
+  if (type === "multi_select") {
+    return Array.isArray(property.multi_select)
+      ? property.multi_select.map((item: any) => item.name).filter(Boolean).join(", ")
+      : "";
+  }
+
+  if (type === "date") {
+    const start = property.date?.start || "";
+    const end = property.date?.end || "";
+    return [start, end].filter(Boolean).join(" - ");
+  }
+
+  if (type === "people") {
+    return Array.isArray(property.people)
+      ? property.people.map((person: any) => person.name || person.id).filter(Boolean).join(", ")
+      : "";
+  }
+
+  if (type === "files") {
+    return Array.isArray(property.files)
+      ? property.files.map((file: any) => file.name || file.file?.url || file.external?.url).filter(Boolean).join(", ")
+      : "";
+  }
+
+  if (type === "url") {
+    return property.url || "";
+  }
+
+  if (type === "email") {
+    return property.email || "";
+  }
+
+  if (type === "phone_number") {
+    return property.phone_number || "";
+  }
+
+  if (type === "number") {
+    return property.number === null || property.number === undefined ? "" : String(property.number);
+  }
+
+  if (type === "checkbox") {
+    return property.checkbox ? "true" : "false";
+  }
+
+  if (type === "created_time") {
+    return property.created_time || "";
+  }
+
+  if (type === "last_edited_time") {
+    return property.last_edited_time || "";
+  }
+
+  if (type === "formula") {
+    return getFormulaText(property.formula);
+  }
+
+  if (type === "rollup") {
+    return getRollupText(property.rollup);
+  }
+
   return "";
 }
 
-function normalizeText(value: string): string {
+function getFormulaText(formula: Record<string, any> | undefined): string {
+  if (!formula || !formula.type) {
+    return "";
+  }
+
+  const value = formula[formula.type];
+
+  if (value === null || value === undefined) {
+    return "";
+  }
+
+  if (typeof value === "object") {
+    return JSON.stringify(value);
+  }
+
+  return String(value);
+}
+
+function getRollupText(rollup: Record<string, any> | undefined): string {
+  if (!rollup || !rollup.type) {
+    return "";
+  }
+
+  const value = rollup[rollup.type];
+
+  if (Array.isArray(value)) {
+    return value.map((item) => JSON.stringify(item)).join(", ");
+  }
+
+  if (value === null || value === undefined) {
+    return "";
+  }
+
+  if (typeof value === "object") {
+    return JSON.stringify(value);
+  }
+
+  return String(value);
+}
+
+function richTextToPlain(value: unknown): string {
+  if (!Array.isArray(value)) {
+    return "";
+  }
+
   return value
-    .toLowerCase()
-    .replace(/[、。！？!?,.()[\]【】「」『』]/g, " ")
-    .replace(/\s+/g, " ")
+    .map((item) => {
+      if (!item || typeof item !== "object") {
+        return "";
+      }
+
+      const record = item as Record<string, any>;
+      return record.plain_text || record.text?.content || record.mention?.plain_text || "";
+    })
+    .filter(Boolean)
+    .join("")
     .trim();
 }
 
-function stripListPrefix(value: string): string {
-  return value
-    .replace(/^\s*(\d+[\.)]|[０-９]+[．.)）]|[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳]|[-・●■])\s*/g, "")
-    .trim();
-}
-
-function hasAny(question: string, terms: string[]): boolean {
-  const raw = question.toLowerCase();
-  const normalized = normalizeText(question);
-  return terms.some((term) => raw.includes(term.toLowerCase()) || normalized.includes(normalizeText(term)));
-}
-
-function buildSearchTerms(question: string): string[] {
-  const roughTerms = normalizeText(question)
-    .split(" ")
-    .map((term) => term.trim())
-    .filter((term) => term.length >= 2)
-    .filter((term) => !["初心者", "向け", "説明", "してください", "教えて", "方法", "流れ", "手順"].includes(term));
-
-  const matched = DOMAIN_TERMS.filter((term) => hasAny(question, [term]));
-  const expanded: string[] = [];
-
-  if (question.includes("バス")) {
-    expanded.push("大型バス", "貸切バス", "ヤサカ観光", "業者発注", "見積", "発注書", "納品書", "請求書", "Coupa");
-  }
-  if (question.includes("発注")) {
-    expanded.push("業者発注", "発注書", "見積もり依頼", "Coupa", "フォローオン", "納品書", "請求書");
-  }
-  if (question.includes("支払") || question.includes("請求")) {
-    expanded.push("経理", "支払", "請求書", "インボイス", "Convera", "納品書", "業務完了報告書");
-  }
-  if (question.includes("契約") || question.includes("合意書") || question.toLowerCase().includes("agreement")) {
-    expanded.push("契約", "合意書", "agreement", "支払", "キャンセル", "個人情報", "保険");
-  }
-  if (question.includes("アレルギー") || question.includes("給食") || question.includes("学校")) {
-    expanded.push("学校訪問", "小学校", "給食", "アレルギー", "参加者", "名簿", "フォーム");
-  }
-  if (question.includes("通学") || question.includes("交通") || question.includes("徒歩") || question.includes("自転車")) {
-    expanded.push("通学", "通学方法", "交通手段", "徒歩", "バス", "電車", "自転車", "自動車", "Pledge", "誓約書", "禁止");
-  }
-
-  return Array.from(new Set([...matched, ...expanded, ...roughTerms])).filter(Boolean);
-}
-
-function buildSearchQueries(question: string, terms: string[]): string[] {
-  const queries = [question];
-  if (question.includes("バス")) queries.push("大型バス 発注", "ヤサカ観光", "Coupa 見積 バス");
-  if (question.includes("発注")) queries.push("業者発注", "発注書", "見積もり依頼", "Coupaフォローオン");
-  if (question.includes("支払") || question.includes("請求")) queries.push("経理 支払", "請求書", "納品書", "Convera");
-  if (question.includes("契約") || question.includes("合意書")) queries.push("契約", "合意書", "agreement", "キャンセル");
-  if (hasAny(question, ["対象外", "参加資格", "応募資格", "高校生", "eligibility"])) {
-    queries.push("参加対象外 対応", "参加資格 対象学生", "高校生 対象外", "eligibility eligible ineligible");
-  }
-  if (hasAny(question, ["日程", "期間", "開始日", "終了日", "チェックイン", "チェックアウト"])) {
-    queries.push("RSJP 日程", "2026 RSJP 日程", "開始日 終了日", "チェックイン チェックアウト");
-  }
-  if (hasAny(question, ["通学", "交通", "徒歩", "自転車", "自動車", "Pledge"])) {
-    queries.push("大学への通学方法", "通学 交通手段", "自転車 自動車 禁止", "Pledge 通学");
-  }
-  queries.push(...terms.slice(0, 18));
-  return Array.from(new Set(queries.map((query) => query.trim()).filter(Boolean))).slice(0, MAX_SEARCH_QUERIES);
-}
-
-function scorePage(question: string, page: ContextPage): number {
-  const terms = buildSearchTerms(question).map(normalizeText).filter(Boolean);
-  const q = normalizeText(question);
-  const title = normalizeText(page.title);
-  const content = normalizeText(page.content);
-  const propertyText = normalizeText(page.propertyText);
-  const sourceName = normalizeText(page.sourceName);
+function scoreDocument(document: SearchDocument, question: string, searchTerms: string[]): number {
+  const title = normalizeText(document.title);
+  const text = normalizeText(document.text);
+  const query = normalizeText(question);
   let score = 0;
 
-  if (title.includes(q)) score += 45;
-  if (propertyText.includes(q)) score += 40;
-  if (content.includes(q)) score += 24;
-
-  for (const term of terms) {
-    if (title.includes(term)) score += 20;
-    if (propertyText.includes(term)) score += 14;
-    if (content.includes(term)) score += 5;
+  if (query && title.includes(query)) {
+    score += 80;
   }
 
-  const faqQuestion = hasAny(question, ["対象外", "参加資格", "応募資格", "高校生", "日程", "通学", "交通", "eligibility"]);
-  const riskyQuestion = hasAny(question, ["費用", "見積", "請求", "支払", "契約", "合意書", "対象外", "例外", "アレルギー", "医療"]);
-
-  if (faqQuestion && (sourceName.includes("faq") || sourceName.includes("qa") || sourceName.includes("general"))) score += 18;
-  if (propertyText.includes("answer:") || propertyText.includes("回答:")) score += 12;
-  if (riskyQuestion && propertyText) score += 6;
-  if (page.lastEditedTime) score += 0.5;
-
-  const finalTitle = title.split(">").map((item) => item.trim()).filter(Boolean).pop();
-  if (finalTitle && ["はじめに", "緊急連絡先", "ホーム", "目次", "使ってみる"].includes(finalTitle)) {
-    score -= 16;
+  if (query && text.includes(query)) {
+    score += 45;
   }
-  if (!terms.some((term) => title.includes(term))) score -= 2;
-  if (!terms.some((term) => content.includes(term))) score -= 2;
 
-  return Math.round(score * 10) / 10;
+  for (const term of searchTerms) {
+    const normalizedTerm = normalizeText(term);
+
+    if (!normalizedTerm) {
+      continue;
+    }
+
+    if (title.includes(normalizedTerm)) {
+      score += 20;
+    }
+
+    const count = countOccurrences(text, normalizedTerm);
+    score += Math.min(count * 4, 28);
+  }
+
+  if (document.lastEditedTime) {
+    score += 1;
+  }
+
+  return score;
 }
 
-function createEmptyDebug(): SearchDebug {
+function createSearchTerms(question: string): string[] {
+  const normalized = question
+    .replace(/[！？。、，．・/\\|()[\]{}「」『』【】,:;'"`~!?@#$%^&*_+=<>]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const rawTerms = normalized.split(" ").filter(Boolean);
+  const terms = new Set<string>();
+
+  for (const term of rawTerms) {
+    const trimmed = term.trim();
+
+    if (trimmed.length >= 2) {
+      terms.add(trimmed);
+    }
+  }
+
+  const importantJapaneseTerms = [
+    "見積",
+    "請求",
+    "支払",
+    "契約",
+    "合意書",
+    "バス",
+    "宿舎",
+    "保険",
+    "ビザ",
+    "招へい",
+    "学生",
+    "参加者",
+    "申込",
+    "締切",
+    "キャンセル",
+    "課長",
+    "確認",
+    "国際課",
+    "クレオテック",
+    "RSJP",
+    "RWJP",
+    "RDSP",
+    "OU",
+    "JMU",
+    "UCD",
+    "FIU",
+  ];
+
+  for (const term of importantJapaneseTerms) {
+    if (question.includes(term)) {
+      terms.add(term);
+    }
+  }
+
+  return Array.from(terms).slice(0, 30);
+}
+
+function normalizeText(value: string): string {
+  return value.toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+function countOccurrences(text: string, term: string): number {
+  if (!term) {
+    return 0;
+  }
+
+  let count = 0;
+  let index = 0;
+
+  while (true) {
+    const found = text.indexOf(term, index);
+    if (found === -1) {
+      break;
+    }
+    count += 1;
+    index = found + term.length;
+  }
+
+  return count;
+}
+
+function dedupeDocuments(documents: SearchDocument[]): SearchDocument[] {
+  const map = new Map<string, SearchDocument>();
+
+  for (const document of documents) {
+    const key = document.id || `${document.title}-${document.sourceEnvName}`;
+
+    if (!map.has(key)) {
+      map.set(key, document);
+      continue;
+    }
+
+    const existing = map.get(key);
+
+    if (existing && document.text.length > existing.text.length) {
+      map.set(key, document);
+    }
+  }
+
+  return Array.from(map.values());
+}
+
+async function buildAnswer(
+  question: string,
+  documents: SearchDocument[],
+  debug: SearchDebug
+): Promise<AnswerPayload> {
+  const openaiApiKey = getEnv("OPENAI_API_KEY");
+
+  if (!openaiApiKey) {
+    return createFallbackPayload({
+      question,
+      documents,
+      debug,
+      note: "OPENAI_API_KEY が設定されていないため、Notion検索結果をもとに暫定回答を表示しています。",
+    });
+  }
+
+  if (documents.length === 0) {
+    return createFallbackPayload({
+      question,
+      documents,
+      debug,
+      note: "Notion上で関連度の高いページを確認できませんでした。検索語を変えるか、Notion DBの共有設定を確認してください。",
+    });
+  }
+
+  const context = buildContextForAi(documents);
+  const schema = buildAnswerJsonSchema();
+
+  const systemPrompt = [
+    "あなたはRSJP業務マニュアルAIです。",
+    "目的は、新人職員が迷わず進め、危ない判断では課長確認で止まれるようにすることです。",
+    "Notionの参照情報に基づいて、日本語で実務的に回答してください。",
+    "Notionで確認できたことと、確認できなかったことを分けてください。",
+    "費用、見積、請求、契約、支払、受入可否、例外対応、先方への確約、個人情報、アレルギー、医療情報は課長確認が必要です。",
+    "根拠が弱い場合は、断定せず、課長確認またはNotion確認を促してください。",
+    "回答は必ずJSONだけで返してください。",
+  ].join("\n");
+
+  const userPrompt = [
+    `質問: ${question}`,
+    "",
+    "Notionから取得した参照情報:",
+    context,
+    "",
+    "出力条件:",
+    "- answer は、読みやすい本文にする。",
+    "- steps は、新人が順番に進められる手順にする。",
+    "- checklist は、作業前後の確認項目にする。",
+    "- managerGate は、課長確認が必要な判断を明確にする。",
+    "- imagePrompt は、日本語文字を画像生成AIに描かせない前提で、業務フロー図の背景用プロンプトにする。",
+  ].join("\n");
+
+  try {
+    const response = await fetch("https://api.openai.com/v1/responses", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${openaiApiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: getEnv("OPENAI_MODEL") || "gpt-4.1-mini",
+        input: [
+          {
+            role: "system",
+            content: systemPrompt,
+          },
+          {
+            role: "user",
+            content: userPrompt,
+          },
+        ],
+        text: {
+          format: {
+            type: "json_schema",
+            name: "rsjp_manual_answer",
+            strict: true,
+            schema,
+          },
+        },
+      }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      return createFallbackPayload({
+        question,
+        documents,
+        debug,
+        note: `OpenAI APIの呼び出しに失敗しました: HTTP ${response.status} ${errorText.slice(0, 300)}`,
+      });
+    }
+
+    const raw = await response.json();
+    const outputText = extractOpenAiText(raw);
+    const parsed = parseAiJson(outputText);
+
+    return normalizeAnswerPayload({
+      raw: parsed,
+      documents,
+      debug,
+      note: "",
+    });
+  } catch (error) {
+    return createFallbackPayload({
+      question,
+      documents,
+      debug,
+      note: `OpenAI回答生成中にエラーが発生しました: ${getErrorMessage(error)}`,
+    });
+  }
+}
+
+function buildContextForAi(documents: SearchDocument[]): string {
+  return documents
+    .slice(0, MAX_CONTEXT_DOCS)
+    .map((document, index) => {
+      const excerpt = document.text.slice(0, MAX_CONTEXT_CHARS_PER_DOC);
+      return [
+        `--- Reference ${index + 1} ---`,
+        `Title: ${document.title}`,
+        `Source: ${document.sourceName}`,
+        `URL: ${document.url || "N/A"}`,
+        `Score: ${document.score}`,
+        "Content:",
+        excerpt,
+      ].join("\n");
+    })
+    .join("\n\n");
+}
+
+function buildAnswerJsonSchema(): Record<string, unknown> {
   return {
-    searchTerms: [],
-    searchQueries: [],
-    databasePageCount: 0,
-    seedPageCount: 0,
-    discoveredPageCount: 0,
-    selectedPageCount: 0,
-    maxScore: 0,
-    minimumScore: 0,
-    selectedPages: [],
-    sourceCounts: {},
+    type: "object",
+    additionalProperties: false,
+    required: ["answer", "steps", "checklist", "managerGate", "imagePrompt", "oldPolicyNote"],
+    properties: {
+      answer: {
+        type: "string",
+      },
+      steps: {
+        type: "array",
+        items: {
+          type: "string",
+        },
+      },
+      checklist: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["text"],
+          properties: {
+            text: {
+              type: "string",
+            },
+          },
+        },
+      },
+      managerGate: {
+        type: "object",
+        additionalProperties: false,
+        required: ["canProceedAlone", "needManagerApproval", "approvalTiming", "managerQuestionTemplate"],
+        properties: {
+          canProceedAlone: {
+            type: "array",
+            items: {
+              type: "string",
+            },
+          },
+          needManagerApproval: {
+            type: "array",
+            items: {
+              type: "string",
+            },
+          },
+          approvalTiming: {
+            type: "array",
+            items: {
+              type: "string",
+            },
+          },
+          managerQuestionTemplate: {
+            type: "string",
+          },
+        },
+      },
+      imagePrompt: {
+        type: "string",
+      },
+      oldPolicyNote: {
+        type: "string",
+      },
+    },
   };
 }
 
-function createDebug(
-  searchTerms: string[],
-  searchQueries: string[],
-  databasePageCount: number,
-  seedPageCount: number,
-  discoveredPages: ContextPage[],
-  selectedPages: ContextPage[],
-  sources: NotionSource[],
-  maxScore: number,
-  minimumScore: number
-): SearchDebug {
-  const sourceCounts = sources.reduce<Record<string, number>>((counts, source) => {
-    counts[source.name] = 0;
-    return counts;
-  }, {});
-
-  for (const page of discoveredPages) {
-    sourceCounts[page.sourceName] = (sourceCounts[page.sourceName] ?? 0) + 1;
+function extractOpenAiText(raw: any): string {
+  if (typeof raw.output_text === "string") {
+    return raw.output_text;
   }
 
-  return {
-    searchTerms,
-    searchQueries,
-    databasePageCount,
-    seedPageCount,
-    discoveredPageCount: discoveredPages.length,
-    selectedPageCount: selectedPages.length,
-    maxScore,
-    minimumScore,
-    selectedPages: selectedPages.map((page, index) => ({
-      title: `${page.sourceName} > ${page.title}`,
-      score: page.score,
-      url: page.url,
-      lastEditedTime: page.lastEditedTime,
-      contentPreview: (page.content || page.propertyText || page.blockText || "").replace(/\s+/g, " ").slice(0, 320),
-      sourceName: page.sourceName,
-      sourceType: page.sourceType,
-    })),
-    sourceCounts,
-  };
+  if (Array.isArray(raw.output)) {
+    const parts: string[] = [];
+
+    for (const outputItem of raw.output) {
+      if (Array.isArray(outputItem.content)) {
+        for (const contentItem of outputItem.content) {
+          if (typeof contentItem.text === "string") {
+            parts.push(contentItem.text);
+          }
+          if (typeof contentItem.value === "string") {
+            parts.push(contentItem.value);
+          }
+        }
+      }
+    }
+
+    if (parts.length > 0) {
+      return parts.join("\n");
+    }
+  }
+
+  return JSON.stringify(raw);
 }
 
-function fallbackPayload(message: string, debug?: SearchDebug): AnswerPayload {
-  const steps = [
-    "VercelのEnvironment Variablesを確認する",
-    "NOTION_API_KEY と NOTION_DATABASE_ID を確認する",
-    "必要に応じて NOTION_DATABASE_ID_2 と NOTION_DATABASE_ID_3 を確認する",
-    "Notion DBがRSJP Manual AIに共有されているか確認する",
-    "GitHubへcommit / pushする",
-    "Vercelで再デプロイする",
-    "もう一度質問を送信する",
-  ];
-  const checklist = [
-    { text: "NOTION_API_KEYが設定されている" },
-    { text: "NOTION_DATABASE_IDが設定されている" },
-    { text: "NOTION_DATABASE_ID_2 と NOTION_DATABASE_ID_3 が必要に応じて設定されている" },
-    { text: "Notion DBをIntegrationに共有している" },
-    { text: "OPENAI_API_KEYが設定されている" },
-    { text: "Vercelの最新デプロイが成功している" },
-  ];
+function parseAiJson(text: string): Record<string, any> {
+  const cleaned = text
+    .replace(/^```json\s*/i, "")
+    .replace(/^```\s*/i, "")
+    .replace(/```$/i, "")
+    .trim();
+
+  const parsed = JSON.parse(cleaned);
+
+  if (parsed && typeof parsed === "object") {
+    return parsed as Record<string, any>;
+  }
+
+  throw new Error("OpenAI response is not a JSON object.");
+}
+
+function normalizeAnswerPayload(args: {
+  raw: Record<string, any>;
+  documents: SearchDocument[];
+  debug: SearchDebug;
+  note: string;
+}): AnswerPayload {
+  const rawManagerGate = args.raw.managerGate || {};
+  const managerGate: ManagerGate = {
+    canProceedAlone: toStringArray(rawManagerGate.canProceedAlone, DEFAULT_MANAGER_GATE.canProceedAlone),
+    needManagerApproval: toStringArray(rawManagerGate.needManagerApproval, DEFAULT_MANAGER_GATE.needManagerApproval),
+    approvalTiming: toStringArray(rawManagerGate.approvalTiming, DEFAULT_MANAGER_GATE.approvalTiming),
+    managerQuestionTemplate:
+      typeof rawManagerGate.managerQuestionTemplate === "string" && rawManagerGate.managerQuestionTemplate.trim()
+        ? rawManagerGate.managerQuestionTemplate.trim()
+        : DEFAULT_MANAGER_GATE.managerQuestionTemplate,
+  };
+
+  const checklist = normalizeChecklist(args.raw.checklist);
 
   return {
-    answer: message,
-    managerGate: DEFAULT_MANAGER_GATE,
-    steps,
+    answer: typeof args.raw.answer === "string" ? args.raw.answer : "回答を生成できませんでした。",
+    managerGate,
+    steps: toStringArray(args.raw.steps, [
+      "Notionの参照元を確認する",
+      "現在の案件に当てはまる部分を整理する",
+      "判断が必要な箇所は課長に確認する",
+    ]),
     checklist,
-    imagePrompt: buildImagePrompt("API接続確認", steps, checklist),
+    imagePrompt:
+      typeof args.raw.imagePrompt === "string" && args.raw.imagePrompt.trim()
+        ? args.raw.imagePrompt.trim()
+        : buildImagePrompt("RSJP業務フロー"),
     imageUrl: "",
-    references: ["Notion / OpenAI API接続確認"],
+    references: buildReferences(args.documents),
     updatedAt: new Date().toISOString(),
-    oldPolicyNote: "Notion APIまたはOpenAI APIの接続確認中のため、過去運用との差分確認は未実施です。",
-    debug: { search: debug ?? createEmptyDebug() },
+    oldPolicyNote: args.note || (typeof args.raw.oldPolicyNote === "string" ? args.raw.oldPolicyNote : ""),
+    debug: {
+      search: args.debug,
+    },
   };
+}
+
+function createFallbackPayload(args: {
+  question: string;
+  documents: SearchDocument[];
+  debug: SearchDebug;
+  note: string;
+}): AnswerPayload {
+  const references = buildReferences(args.documents);
+  const topTitles = args.documents.slice(0, 5).map((doc) => `・${doc.title}`).join("\n");
+
+  const answer = [
+    "Notion検索は実行しましたが、AI回答生成または参照確認に一部問題があるため、暫定回答を表示します。",
+    "",
+    "確認できた参照候補:",
+    topTitles || "・関連するNotionページを確認できませんでした。",
+    "",
+    "次に確認すること:",
+    "1. Notion DBがIntegrationに共有されているか確認してください。",
+    "2. NOTION_DATABASE_ID、NOTION_DATABASE_ID_2、NOTION_DATABASE_ID_3 がVercelに設定されているか確認してください。",
+    "3. 先方へ確定回答を送る前に、課長確認を入れてください。",
+  ].join("\n");
+
+  return {
+    answer,
+    managerGate: DEFAULT_MANAGER_GATE,
+    steps: [
+      "検索デバッグで、どのナレッジベースが読まれているか確認する",
+      "参照元に関連ページが出ているか確認する",
+      "関連ページが出ない場合は、Notionの共有設定と環境変数を確認する",
+      "費用・契約・例外対応に関わる場合は、先方送信前に課長確認を行う",
+    ],
+    checklist: [
+      { text: "NOTION_API_KEY がVercelに設定されている" },
+      { text: "NOTION_DATABASE_ID がVercelに設定されている" },
+      { text: "NOTION_DATABASE_ID_2 / NOTION_DATABASE_ID_3 が必要に応じて設定されている" },
+      { text: "Notion DBをIntegrationに共有している" },
+      { text: "OPENAI_API_KEY がVercelに設定されている" },
+      { text: "Vercelの最新デプロイが成功している" },
+    ],
+    imagePrompt: buildImagePrompt("API接続確認"),
+    imageUrl: "",
+    references,
+    updatedAt: new Date().toISOString(),
+    oldPolicyNote: args.note,
+    debug: {
+      search: args.debug,
+    },
+  };
+}
+
+function normalizeChecklist(value: unknown): ChecklistItem[] {
+  if (!Array.isArray(value)) {
+    return [
+      { text: "Notionの参照元を確認した" },
+      { text: "判断が必要な点を課長確認に回した" },
+    ];
+  }
+
+  const items = value
+    .map((item) => {
+      if (typeof item === "string") {
+        return { text: item };
+      }
+
+      if (item && typeof item === "object") {
+        const record = item as Record<string, any>;
+        if (typeof record.text === "string") {
+          return { text: record.text };
+        }
+      }
+
+      return null;
+    })
+    .filter((item): item is ChecklistItem => Boolean(item && item.text));
+
+  return items.length > 0
+    ? items
+    : [
+        { text: "Notionの参照元を確認した" },
+        { text: "判断が必要な点を課長確認に回した" },
+      ];
+}
+
+function toStringArray(value: unknown, fallback: string[]): string[] {
+  if (!Array.isArray(value)) {
+    return fallback;
+  }
+
+  const items = value.map((item) => String(item || "").trim()).filter(Boolean);
+  return items.length > 0 ? items : fallback;
+}
+
+function buildReferences(documents: SearchDocument[]): string[] {
+  const references = documents
+    .slice(0, MAX_CONTEXT_DOCS)
+    .map((doc) => {
+      if (doc.url) {
+        return `${doc.title} - ${doc.url}`;
+      }
+      return doc.title;
+    })
+    .filter(Boolean);
+
+  return references.length > 0 ? references : ["Notion参照元なし"];
+}
+
+function buildImagePrompt(topic: string): string {
+  return [
+    `Create a clean professional workflow background for ${topic}.`,
+    "Decorative background only.",
+    "No readable text, no Japanese characters, no English words, no numbers, no labels, no logo.",
+    "Light office style, soft colours, simple flow shapes, suitable for an internal operations manual.",
+  ].join(" ");
+}
+
+async function notionFetch<T>(
+  path: string,
+  method: "GET" | "POST",
+  body?: Record<string, unknown>
+): Promise<T> {
+  const notionApiKey = getEnv("NOTION_API_KEY");
+
+  if (!notionApiKey) {
+    throw new Error("NOTION_API_KEY is missing.");
+  }
+
+  const response = await fetch(`https://api.notion.com/v1${path}`, {
+    method,
+    headers: {
+      Authorization: `Bearer ${notionApiKey}`,
+      "Notion-Version": NOTION_VERSION,
+      "Content-Type": "application/json",
+    },
+    body: method === "POST" ? JSON.stringify(body || {}) : undefined,
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Notion API HTTP ${response.status}: ${errorText.slice(0, 500)}`);
+  }
+
+  return (await response.json()) as T;
+}
+
+function cleanNotionId(id: string): string {
+  return id.trim();
+}
+
+function isNotionPage(value: unknown): value is NotionPage {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const record = value as Record<string, any>;
+  return typeof record.id === "string" && (record.object === "page" || Boolean(record.properties));
+}
+
+function isNotionBlock(value: unknown): value is NotionBlock {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const record = value as Record<string, any>;
+  return typeof record.id === "string";
+}
+
+function getEnv(name: string): string {
+  return process.env[name] || "";
+}
+
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  if (typeof error === "string") {
+    return error;
+  }
+
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return "Unknown error";
+  }
 }
