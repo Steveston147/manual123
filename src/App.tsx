@@ -37,6 +37,7 @@ type SearchDebug = {
   minimumScore: number;
   selectedPages: SearchDebugPage[];
   sourceCounts?: Record<string, number>;
+  errors?: string[];
 };
 
 type AnswerPayload = {
@@ -215,6 +216,18 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+function makeId() {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return crypto.randomUUID();
+  }
+
+  return `id-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function isRecord(value: unknown): value is Record<string, any> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
 function safeParse<T>(value: string | null, fallback: T): T {
   if (!value) return fallback;
 
@@ -223,6 +236,365 @@ function safeParse<T>(value: string | null, fallback: T): T {
   } catch {
     return fallback;
   }
+}
+
+function safeSetStorage(key: string, value: unknown) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // 保存に失敗しても画面は落とさない
+  }
+}
+
+function normalizeString(value: unknown, fallback = "") {
+  return typeof value === "string" && value.trim() ? value.trim() : fallback;
+}
+
+function normalizeBoolean(value: unknown, fallback: boolean) {
+  return typeof value === "boolean" ? value : fallback;
+}
+
+function normalizeNumber(value: unknown, fallback = 0) {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function normalizeStringArray(value: unknown, fallback: string[]) {
+  if (!Array.isArray(value)) return fallback;
+
+  const normalized = value
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+  return normalized.length > 0 ? normalized : fallback;
+}
+
+function normalizeChecklistItems(value: unknown, fallback: ChecklistItem[]) {
+  if (!Array.isArray(value)) return fallback;
+
+  const normalized = value
+    .map((item): ChecklistItem | null => {
+      if (typeof item === "string" && item.trim()) {
+        return { text: item.trim() };
+      }
+
+      if (isRecord(item) && typeof item.text === "string" && item.text.trim()) {
+        return {
+          text: item.text.trim(),
+          done: typeof item.done === "boolean" ? item.done : false,
+        };
+      }
+
+      return null;
+    })
+    .filter((item): item is ChecklistItem => Boolean(item));
+
+  return normalized.length > 0 ? normalized : fallback;
+}
+
+function normalizeManagerGate(value: unknown): ManagerGate {
+  if (!isRecord(value)) return DEFAULT_MANAGER_GATE;
+
+  return {
+    canProceedAlone: normalizeStringArray(
+      value.canProceedAlone,
+      DEFAULT_MANAGER_GATE.canProceedAlone
+    ),
+    needManagerApproval: normalizeStringArray(
+      value.needManagerApproval,
+      DEFAULT_MANAGER_GATE.needManagerApproval
+    ),
+    approvalTiming: normalizeStringArray(
+      value.approvalTiming,
+      DEFAULT_MANAGER_GATE.approvalTiming
+    ),
+    managerQuestionTemplate: normalizeString(
+      value.managerQuestionTemplate,
+      DEFAULT_MANAGER_GATE.managerQuestionTemplate
+    ),
+  };
+}
+
+function normalizeSearchDebug(value: unknown): SearchDebug {
+  if (!isRecord(value)) {
+    return {
+      searchTerms: [],
+      searchQueries: [],
+      databasePageCount: 0,
+      seedPageCount: 0,
+      discoveredPageCount: 0,
+      selectedPageCount: 0,
+      maxScore: 0,
+      minimumScore: 0,
+      selectedPages: [],
+      sourceCounts: {},
+      errors: [],
+    };
+  }
+
+  const knowledgeBases = Array.isArray(value.knowledgeBases)
+    ? value.knowledgeBases
+    : [];
+
+  const sourceCountsFromKnowledgeBases: Record<string, number> = {};
+
+  knowledgeBases.forEach((item) => {
+    if (!isRecord(item)) return;
+
+    const name = normalizeString(item.name, normalizeString(item.envName, "Unknown"));
+    const count = normalizeNumber(item.selected, normalizeNumber(item.fetched, 0));
+    sourceCountsFromKnowledgeBases[name] = count;
+  });
+
+  const sourceCounts = isRecord(value.sourceCounts)
+    ? Object.fromEntries(
+        Object.entries(value.sourceCounts)
+          .filter(([, count]) => typeof count === "number")
+          .map(([sourceName, count]) => [sourceName, count as number])
+      )
+    : sourceCountsFromKnowledgeBases;
+
+  const selectedPagesFromArray = Array.isArray(value.selectedPages)
+    ? value.selectedPages
+        .map((page, index): SearchDebugPage | null => {
+          if (isRecord(page)) {
+            return {
+              title: normalizeString(page.title, `Page ${index + 1}`),
+              score: normalizeNumber(page.score, 0),
+              url: typeof page.url === "string" ? page.url : undefined,
+              lastEditedTime:
+                typeof page.lastEditedTime === "string"
+                  ? page.lastEditedTime
+                  : undefined,
+              contentPreview: normalizeString(page.contentPreview, ""),
+              sourceName:
+                typeof page.sourceName === "string" ? page.sourceName : undefined,
+              sourceType:
+                typeof page.sourceType === "string" ? page.sourceType : undefined,
+            };
+          }
+
+          return null;
+        })
+        .filter((page): page is SearchDebugPage => Boolean(page))
+    : [];
+
+  const selectedPagesFromTitles = Array.isArray(value.selectedTitles)
+    ? value.selectedTitles
+        .filter((item): item is string => typeof item === "string")
+        .map((title, index) => ({
+          title,
+          score: 0,
+          contentPreview: "APIから返された候補タイトルです。",
+          sourceName: "API Debug",
+          sourceType: `candidate-${index + 1}`,
+        }))
+    : [];
+
+  const selectedPages =
+    selectedPagesFromArray.length > 0 ? selectedPagesFromArray : selectedPagesFromTitles;
+
+  return {
+    searchTerms: normalizeStringArray(value.searchTerms, []),
+    searchQueries: normalizeStringArray(
+      value.searchQueries,
+      typeof value.query === "string" && value.query.trim() ? [value.query.trim()] : []
+    ),
+    databasePageCount: normalizeNumber(
+      value.databasePageCount,
+      knowledgeBases.reduce((sum, item) => {
+        if (!isRecord(item)) return sum;
+        return sum + normalizeNumber(item.fetched, 0);
+      }, 0)
+    ),
+    seedPageCount: normalizeNumber(value.seedPageCount, normalizeNumber(value.totalCandidates, 0)),
+    discoveredPageCount: normalizeNumber(
+      value.discoveredPageCount,
+      normalizeNumber(value.totalCandidates, 0)
+    ),
+    selectedPageCount: normalizeNumber(
+      value.selectedPageCount,
+      typeof value.selectedPages === "number" ? value.selectedPages : selectedPages.length
+    ),
+    maxScore: normalizeNumber(value.maxScore, normalizeNumber(value.topScore, 0)),
+    minimumScore: normalizeNumber(value.minimumScore, normalizeNumber(value.threshold, 0)),
+    selectedPages,
+    sourceCounts,
+    errors: normalizeStringArray(value.errors, []),
+  };
+}
+
+function normalizeAnswerPayload(question: string, raw: unknown): AnswerPayload {
+  if (typeof raw === "string") {
+    return {
+      answer: raw,
+      managerGate: DEFAULT_MANAGER_GATE,
+      steps: ["回答本文を確認し、不足部分を追質問してください。"],
+      checklist: [
+        { text: "回答に具体的な作業手順がある" },
+        { text: "担当者依存の表現がない" },
+        { text: "先方へ送る前に課長確認が必要な点を確認した" },
+      ],
+      imagePrompt:
+        "Background image only. No text, no letters, no numbers, no labels. Friendly flat illustration for an administrative workflow manual.",
+      imageUrl: "",
+      references: ["API response"],
+      updatedAt: nowIso(),
+      oldPolicyNote:
+        "過去版との差分情報は取得できませんでした。必要なら更新日を指定して再質問してください。",
+    };
+  }
+
+  const data = isRecord(raw) ? raw : {};
+
+  const debugSearch =
+    isRecord(data.debug) && data.debug.search
+      ? normalizeSearchDebug(data.debug.search)
+      : undefined;
+
+  return {
+    answer: normalizeString(
+      data.answer,
+      normalizeString(
+        data.text,
+        `「${question}」への回答データが不足していたため、再実行してください。`
+      )
+    ),
+    managerGate: normalizeManagerGate(data.managerGate),
+    steps: normalizeStringArray(data.steps, [
+      "質問の目的を確認する",
+      "Notion APIで最新更新日を確認する",
+      "業務手順を順番に実行する",
+    ]),
+    checklist: normalizeChecklistItems(data.checklist, [
+      { text: "対象手順を最後まで実施した" },
+      { text: "記録を保存した" },
+      { text: "課長確認が必要な内容を送信前に確認した" },
+    ]),
+    imagePrompt: normalizeString(
+      data.imagePrompt,
+      "Background image only. No text, no letters, no numbers, no labels. Friendly flat illustration for an administrative workflow manual."
+    ),
+    imageUrl: typeof data.imageUrl === "string" ? data.imageUrl : "",
+    references: normalizeStringArray(data.references, ["Notion API 最新版"]),
+    updatedAt: normalizeString(data.updatedAt, nowIso()),
+    oldPolicyNote: normalizeString(
+      data.oldPolicyNote,
+      "過去運用との差分は、更新履歴の要約を確認してください。"
+    ),
+    debug: debugSearch ? { search: debugSearch } : undefined,
+  };
+}
+
+function normalizeChatMessage(value: unknown): ChatMessage | null {
+  if (!isRecord(value)) return null;
+
+  const role = value.role === "user" || value.role === "assistant" ? value.role : null;
+  if (!role) return null;
+
+  const id = normalizeString(value.id, makeId());
+  const createdAt = normalizeString(value.createdAt, nowIso());
+
+  if (role === "user") {
+    const rawText = normalizeString(value.rawText, normalizeString(value.question, ""));
+
+    return {
+      id,
+      role,
+      rawText,
+      createdAt,
+    };
+  }
+
+  const question = normalizeString(value.question, "");
+  const payload = normalizeAnswerPayload(question, value.payload ?? value.rawText ?? "");
+
+  return {
+    id,
+    role,
+    question,
+    payload,
+    createdAt,
+  };
+}
+
+function normalizeChatMessages(value: unknown): ChatMessage[] {
+  if (!Array.isArray(value)) return [];
+
+  return value
+    .map(normalizeChatMessage)
+    .filter((message): message is ChatMessage => Boolean(message))
+    .slice(-50);
+}
+
+function normalizeRevisionRecord(value: unknown): RevisionRecord | null {
+  if (!isRecord(value)) return null;
+
+  return {
+    id: normalizeString(value.id, makeId()),
+    question: normalizeString(value.question, ""),
+    originalAnswer: normalizeString(value.originalAnswer, ""),
+    revisedAnswer: normalizeString(value.revisedAnswer, ""),
+    revisedAt: normalizeString(value.revisedAt, nowIso()),
+    note: normalizeString(value.note, ""),
+  };
+}
+
+function normalizeRevisionRecords(value: unknown): RevisionRecord[] {
+  if (!Array.isArray(value)) return [];
+
+  return value
+    .map(normalizeRevisionRecord)
+    .filter((record): record is RevisionRecord => Boolean(record))
+    .slice(0, 100);
+}
+
+function normalizeSettings(value: unknown): Settings {
+  if (!isRecord(value)) return DEFAULT_SETTINGS;
+
+  return {
+    qaWebhookUrl: normalizeString(value.qaWebhookUrl, DEFAULT_SETTINGS.qaWebhookUrl),
+    authWebhookUrl: normalizeString(value.authWebhookUrl, DEFAULT_SETTINGS.authWebhookUrl),
+    revisionNotionWebhookUrl: normalizeString(
+      value.revisionNotionWebhookUrl,
+      DEFAULT_SETTINGS.revisionNotionWebhookUrl
+    ),
+    notionDatabaseUrl: normalizeString(
+      value.notionDatabaseUrl,
+      DEFAULT_SETTINGS.notionDatabaseUrl
+    ),
+    notionRevisionDatabaseId: normalizeString(
+      value.notionRevisionDatabaseId,
+      DEFAULT_SETTINGS.notionRevisionDatabaseId
+    ),
+    enforceLatestPolicy: normalizeBoolean(
+      value.enforceLatestPolicy,
+      DEFAULT_SETTINGS.enforceLatestPolicy
+    ),
+    imageProvider: normalizeString(value.imageProvider, DEFAULT_SETTINGS.imageProvider),
+    imageModel: normalizeString(value.imageModel, DEFAULT_SETTINGS.imageModel),
+  };
+}
+
+function loadMessagesFromStorage() {
+  const parsed = safeParse<unknown>(localStorage.getItem(STORAGE_KEYS.messages), []);
+  const normalized = normalizeChatMessages(parsed);
+  safeSetStorage(STORAGE_KEYS.messages, normalized);
+  return normalized;
+}
+
+function loadRevisionsFromStorage() {
+  const parsed = safeParse<unknown>(localStorage.getItem(STORAGE_KEYS.revisions), []);
+  const normalized = normalizeRevisionRecords(parsed);
+  safeSetStorage(STORAGE_KEYS.revisions, normalized);
+  return normalized;
+}
+
+function loadSettingsFromStorage() {
+  const parsed = safeParse<unknown>(localStorage.getItem(STORAGE_KEYS.settings), DEFAULT_SETTINGS);
+  const normalized = normalizeSettings(parsed);
+  safeSetStorage(STORAGE_KEYS.settings, normalized);
+  return normalized;
 }
 
 function isInternalAskApi(url: string) {
@@ -267,43 +639,6 @@ function stripListPrefixForUi(value: string) {
   return value
     .replace(/^\s*(\d+[\.)]|[０-９]+[．.)）]|[①②③④⑤⑥⑦⑧⑨⑩]|[-・●■])\s*/g, "")
     .trim();
-}
-
-function normalizeStringArray(value: unknown, fallback: string[]) {
-  if (!Array.isArray(value)) return fallback;
-
-  const normalized = value
-    .filter((item): item is string => typeof item === "string")
-    .map((item) => item.trim())
-    .filter(Boolean);
-
-  return normalized.length > 0 ? normalized : fallback;
-}
-
-function normalizeManagerGate(value: unknown): ManagerGate {
-  if (!value || typeof value !== "object") return DEFAULT_MANAGER_GATE;
-
-  const data = value as Partial<ManagerGate>;
-
-  return {
-    canProceedAlone: normalizeStringArray(
-      data.canProceedAlone,
-      DEFAULT_MANAGER_GATE.canProceedAlone
-    ),
-    needManagerApproval: normalizeStringArray(
-      data.needManagerApproval,
-      DEFAULT_MANAGER_GATE.needManagerApproval
-    ),
-    approvalTiming: normalizeStringArray(
-      data.approvalTiming,
-      DEFAULT_MANAGER_GATE.approvalTiming
-    ),
-    managerQuestionTemplate:
-      typeof data.managerQuestionTemplate === "string" &&
-      data.managerQuestionTemplate.trim()
-        ? data.managerQuestionTemplate.trim()
-        : DEFAULT_MANAGER_GATE.managerQuestionTemplate,
-  };
 }
 
 function makeSlideLabel(value: string, index: number) {
@@ -480,64 +815,17 @@ ${requestBody.question}
 }
 
 function assistantFromRaw(question: string, raw: unknown): AnswerPayload {
-  if (typeof raw === "string") {
-    return {
-      answer: raw,
-      managerGate: DEFAULT_MANAGER_GATE,
-      steps: ["回答本文を確認し、不足部分を追質問してください。"],
-      checklist: [
-        { text: "回答に具体的な作業手順がある" },
-        { text: "担当者依存の表現がない" },
-        { text: "先方へ送る前に課長確認が必要な点を確認した" },
-      ],
-      imagePrompt:
-        "Background image only. No text, no letters, no numbers, no labels. Friendly flat illustration for an administrative workflow manual.",
-      references: ["Notion API 最新ページ", "社内ルール"],
-      updatedAt: nowIso(),
-      oldPolicyNote:
-        "過去版との差分情報は取得できませんでした。必要なら更新日を指定して再質問してください。",
-    };
-  }
-
-  const anyData = raw as Partial<AnswerPayload> & { text?: string };
-
-  return {
-    answer:
-      anyData.answer ??
-      anyData.text ??
-      `「${question}」への回答データが不足していたため、再実行してください。`,
-    managerGate: normalizeManagerGate(anyData.managerGate),
-    steps:
-      anyData.steps && anyData.steps.length > 0
-        ? anyData.steps
-        : [
-            "質問の目的を確認する",
-            "Notion APIで最新更新日を確認する",
-            "業務手順を順番に実行する",
-          ],
-    checklist:
-      anyData.checklist && anyData.checklist.length > 0
-        ? anyData.checklist
-        : [
-            { text: "対象手順を最後まで実施した" },
-            { text: "記録を保存した" },
-            { text: "課長確認が必要な内容を送信前に確認した" },
-          ],
-    imagePrompt:
-      anyData.imagePrompt ??
-      "Background image only. No text, no letters, no numbers, no labels. Friendly flat illustration for an administrative workflow manual.",
-    imageUrl: anyData.imageUrl,
-    references: anyData.references ?? ["Notion API 最新版"],
-    updatedAt: anyData.updatedAt ?? nowIso(),
-    oldPolicyNote:
-      anyData.oldPolicyNote ??
-      "過去運用との差分は、更新履歴の要約を確認してください。",
-    debug: anyData.debug,
-  };
+  return normalizeAnswerPayload(question, raw);
 }
 
 function renderSearchDebug(debug?: SearchDebug) {
   if (!debug) return null;
+
+  const searchTerms = Array.isArray(debug.searchTerms) ? debug.searchTerms : [];
+  const searchQueries = Array.isArray(debug.searchQueries) ? debug.searchQueries : [];
+  const selectedPages = Array.isArray(debug.selectedPages) ? debug.selectedPages : [];
+  const sourceCounts = debug.sourceCounts ?? {};
+  const errors = Array.isArray(debug.errors) ? debug.errors : [];
 
   return (
     <details className="debug-panel no-print">
@@ -548,21 +836,32 @@ function renderSearchDebug(debug?: SearchDebug) {
           <h4>検索サマリー</h4>
 
           <div className="debug-grid">
-            <p className="meta">DBページ数: {debug.databasePageCount}</p>
-            <p className="meta">候補ページ数: {debug.seedPageCount}</p>
-            <p className="meta">探索ページ数: {debug.discoveredPageCount}</p>
-            <p className="meta">採用ページ数: {debug.selectedPageCount}</p>
-            <p className="meta">最高スコア: {debug.maxScore}</p>
-            <p className="meta">採用基準: {debug.minimumScore}</p>
+            <p className="meta">DBページ数: {debug.databasePageCount ?? 0}</p>
+            <p className="meta">候補ページ数: {debug.seedPageCount ?? 0}</p>
+            <p className="meta">探索ページ数: {debug.discoveredPageCount ?? 0}</p>
+            <p className="meta">採用ページ数: {debug.selectedPageCount ?? 0}</p>
+            <p className="meta">最高スコア: {debug.maxScore ?? 0}</p>
+            <p className="meta">採用基準: {debug.minimumScore ?? 0}</p>
           </div>
         </section>
+
+        {errors.length > 0 && (
+          <section className="debug-section">
+            <h4>エラー情報</h4>
+            <ol className="compact-list">
+              {errors.map((item, index) => (
+                <li key={`${item}-${index}`}>{item}</li>
+              ))}
+            </ol>
+          </section>
+        )}
 
         <section className="debug-section">
           <h4>ナレッジベース別件数</h4>
 
-          {debug.sourceCounts && Object.keys(debug.sourceCounts).length > 0 ? (
+          {Object.keys(sourceCounts).length > 0 ? (
             <div className="debug-grid">
-              {Object.entries(debug.sourceCounts).map(([sourceName, count]) => (
+              {Object.entries(sourceCounts).map(([sourceName, count]) => (
                 <p className="meta" key={sourceName}>
                   {sourceName}: {count}
                 </p>
@@ -576,9 +875,9 @@ function renderSearchDebug(debug?: SearchDebug) {
         <section className="debug-section">
           <h4>検索語</h4>
 
-          {debug.searchTerms.length > 0 ? (
+          {searchTerms.length > 0 ? (
             <div className="tag-row">
-              {debug.searchTerms.map((term) => (
+              {searchTerms.map((term) => (
                 <span className="tag" key={term}>
                   {term}
                 </span>
@@ -592,9 +891,9 @@ function renderSearchDebug(debug?: SearchDebug) {
         <section className="debug-section">
           <h4>検索クエリ</h4>
 
-          {debug.searchQueries.length > 0 ? (
+          {searchQueries.length > 0 ? (
             <ol className="compact-list">
-              {debug.searchQueries.map((query) => (
+              {searchQueries.map((query) => (
                 <li key={query}>{query}</li>
               ))}
             </ol>
@@ -606,9 +905,9 @@ function renderSearchDebug(debug?: SearchDebug) {
         <section className="debug-section">
           <h4>採用されたNotionページ</h4>
 
-          {debug.selectedPages.length > 0 ? (
+          {selectedPages.length > 0 ? (
             <div className="source-card-list">
-              {debug.selectedPages.map((page, index) => (
+              {selectedPages.map((page, index) => (
                 <article className="source-card" key={`${page.title}-${index}`}>
                   <p className="source-title">
                     {index + 1}. {page.title}
@@ -681,7 +980,7 @@ function renderWorkflowStrip() {
 }
 
 function renderManagerGate(managerGate?: ManagerGate) {
-  const gate = managerGate ?? DEFAULT_MANAGER_GATE;
+  const gate = normalizeManagerGate(managerGate);
 
   return (
     <section className="answer-section manager-gate-card">
@@ -745,17 +1044,9 @@ export default function App() {
   const [imageErrors, setImageErrors] = useState<Record<string, string>>({});
   const [generatedImageUrls, setGeneratedImageUrls] = useState<Record<string, string>>({});
 
-  const [messages, setMessages] = useState<ChatMessage[]>(() =>
-    safeParse<ChatMessage[]>(localStorage.getItem(STORAGE_KEYS.messages), [])
-  );
-
-  const [revisions, setRevisions] = useState<RevisionRecord[]>(() =>
-    safeParse<RevisionRecord[]>(localStorage.getItem(STORAGE_KEYS.revisions), [])
-  );
-
-  const [settings, setSettings] = useState<Settings>(() =>
-    safeParse<Settings>(localStorage.getItem(STORAGE_KEYS.settings), DEFAULT_SETTINGS)
-  );
+  const [messages, setMessages] = useState<ChatMessage[]>(() => loadMessagesFromStorage());
+  const [revisions, setRevisions] = useState<RevisionRecord[]>(() => loadRevisionsFromStorage());
+  const [settings, setSettings] = useState<Settings>(() => loadSettingsFromStorage());
 
   const [activeTab, setActiveTab] = useState<"chat" | "ops" | "guide">("chat");
   const [editTargetId, setEditTargetId] = useState<string | null>(null);
@@ -791,18 +1082,21 @@ export default function App() {
   }, []);
 
   function persistMessages(next: ChatMessage[]) {
-    setMessages(next);
-    localStorage.setItem(STORAGE_KEYS.messages, JSON.stringify(next));
+    const normalized = normalizeChatMessages(next);
+    setMessages(normalized);
+    safeSetStorage(STORAGE_KEYS.messages, normalized);
   }
 
   function persistRevisions(next: RevisionRecord[]) {
-    setRevisions(next);
-    localStorage.setItem(STORAGE_KEYS.revisions, JSON.stringify(next));
+    const normalized = normalizeRevisionRecords(next);
+    setRevisions(normalized);
+    safeSetStorage(STORAGE_KEYS.revisions, normalized);
   }
 
   function persistSettings(next: Settings) {
-    setSettings(next);
-    localStorage.setItem(STORAGE_KEYS.settings, JSON.stringify(next));
+    const normalized = normalizeSettings(next);
+    setSettings(normalized);
+    safeSetStorage(STORAGE_KEYS.settings, normalized);
   }
 
   function clearMessages() {
@@ -819,6 +1113,7 @@ export default function App() {
     setError(null);
     setEmail("demo@rsjp.local");
     setPassword("");
+    setMessages(loadMessagesFromStorage());
     setAuth({ email: "demo@rsjp.local", token: "local-demo-token" });
   }
 
@@ -842,6 +1137,7 @@ export default function App() {
     setError(null);
 
     if (!settings.authWebhookUrl.trim()) {
+      setMessages(loadMessagesFromStorage());
       setAuth({ email: email.trim(), token: "local-dev-token" });
       setPassword("");
       return;
@@ -870,6 +1166,7 @@ export default function App() {
         // plain text response fallback
       }
 
+      setMessages(loadMessagesFromStorage());
       setAuth({
         email: email.trim(),
         token: parsed.token ?? "token-from-auth-webhook",
@@ -893,27 +1190,27 @@ export default function App() {
     setIsLoading(true);
 
     const userMessage: ChatMessage = {
-      id: crypto.randomUUID(),
+      id: makeId(),
       role: "user",
       rawText: trimmed,
       createdAt: nowIso(),
     };
 
     const pendingAssistant: ChatMessage = {
-      id: crypto.randomUUID(),
+      id: makeId(),
       role: "assistant",
       question: trimmed,
-      payload: {
+      payload: normalizeAnswerPayload(trimmed, {
         answer: "回答を生成中です…",
         steps: [],
         checklist: [],
         imagePrompt: "",
         managerGate: DEFAULT_MANAGER_GATE,
-      },
+      }),
       createdAt: nowIso(),
     };
 
-    const base = [...messages, userMessage, pendingAssistant];
+    const base = normalizeChatMessages([...messages, userMessage, pendingAssistant]);
 
     persistMessages(base);
     setQuestion("");
@@ -924,7 +1221,7 @@ export default function App() {
       let nextPayload: AnswerPayload;
 
       if (shouldUseLocalMock(settings.qaWebhookUrl)) {
-        nextPayload = await localAskMock(requestBody);
+        nextPayload = normalizeAnswerPayload(trimmed, await localAskMock(requestBody));
       } else {
         const response = await fetch(settings.qaWebhookUrl, {
           method: "POST",
@@ -955,19 +1252,20 @@ export default function App() {
       persistMessages(
         base.map((message) =>
           message.id === pendingAssistant.id
-            ? { ...message, payload: nextPayload }
+            ? { ...message, payload: normalizeAnswerPayload(trimmed, nextPayload) }
             : message
         )
       );
     } catch (err) {
-      setError(err instanceof Error ? err.message : "不明なエラーです。");
+      const errorMessage = err instanceof Error ? err.message : "不明なエラーです。";
+      setError(errorMessage);
 
       persistMessages(
         base.map((message) =>
           message.id === pendingAssistant.id
             ? {
                 ...message,
-                payload: {
+                payload: normalizeAnswerPayload(trimmed, {
                   answer:
                     "回答取得に失敗しました。送信先URL、API実行状態、またはCORS設定を確認してください。",
                   managerGate: DEFAULT_MANAGER_GATE,
@@ -982,7 +1280,23 @@ export default function App() {
                     { text: "先方へ回答する前に課長確認が必要な内容を確認した" },
                   ],
                   imagePrompt: "",
-                },
+                  oldPolicyNote: errorMessage,
+                  debug: {
+                    search: {
+                      searchTerms: [],
+                      searchQueries: [trimmed],
+                      databasePageCount: 0,
+                      seedPageCount: 0,
+                      discoveredPageCount: 0,
+                      selectedPageCount: 0,
+                      maxScore: 0,
+                      minimumScore: 0,
+                      selectedPages: [],
+                      sourceCounts: {},
+                      errors: [errorMessage],
+                    },
+                  },
+                }),
               }
             : message
         )
@@ -1069,7 +1383,7 @@ export default function App() {
     if (!target?.payload || !target.question) return;
 
     const record: RevisionRecord = {
-      id: crypto.randomUUID(),
+      id: makeId(),
       question: target.question,
       originalAnswer: target.payload.answer,
       revisedAnswer: editedAnswer.trim(),
@@ -1084,11 +1398,11 @@ export default function App() {
         message.id === editTargetId
           ? {
               ...message,
-              payload: {
+              payload: normalizeAnswerPayload(target.question ?? "", {
                 ...message.payload!,
                 answer: editedAnswer.trim(),
                 updatedAt: nowIso(),
-              },
+              }),
             }
           : message
       )
@@ -1201,11 +1515,12 @@ export default function App() {
   }
 
   function renderAssistant(messageId: string, payload: AnswerPayload) {
+    const safePayload = normalizeAnswerPayload("", payload);
     const isGeneratingImage = Boolean(imageLoadingIds[messageId]);
     const imageError = imageErrors[messageId];
-    const displayImageUrl = generatedImageUrls[messageId] || payload.imageUrl;
-    const backgroundPrompt = buildBackgroundImagePrompt(payload);
-    const isPendingAnswer = payload.answer === "回答を生成中です…" && payload.steps.length === 0;
+    const displayImageUrl = generatedImageUrls[messageId] || safePayload.imageUrl;
+    const backgroundPrompt = buildBackgroundImagePrompt(safePayload);
+    const isPendingAnswer = safePayload.answer === "回答を生成中です…" && safePayload.steps.length === 0;
 
     if (isPendingAnswer) {
       return renderLoadingCard();
@@ -1225,10 +1540,10 @@ export default function App() {
             <span className="section-badge">まず読む</span>
           </div>
 
-          <p className="answer-text">{payload.answer}</p>
+          <p className="answer-text">{safePayload.answer}</p>
         </section>
 
-        {renderManagerGate(payload.managerGate)}
+        {renderManagerGate(safePayload.managerGate)}
 
         <section className="answer-section">
           <div className="section-heading-row">
@@ -1236,9 +1551,9 @@ export default function App() {
             <span className="section-badge">実行順</span>
           </div>
 
-          {payload.steps.length > 0 ? (
+          {safePayload.steps.length > 0 ? (
             <ol className="step-list">
-              {payload.steps.map((step, index) => (
+              {safePayload.steps.map((step, index) => (
                 <li key={`${step}-${index}`}>{step}</li>
               ))}
             </ol>
@@ -1253,9 +1568,9 @@ export default function App() {
             <span className="section-badge">抜け漏れ確認</span>
           </div>
 
-          {payload.checklist.length > 0 ? (
+          {safePayload.checklist.length > 0 ? (
             <ul className="checklist">
-              {payload.checklist.map((item, index) => (
+              {safePayload.checklist.map((item, index) => (
                 <li key={`${item.text}-${index}`}>
                   <input type="checkbox" checked={Boolean(item.done)} readOnly />
                   <span>{item.text}</span>
@@ -1274,17 +1589,17 @@ export default function App() {
               <span className="section-badge">文字はUI表示</span>
             </div>
 
-            {renderSlidePreview(payload)}
+            {renderSlidePreview(safePayload)}
 
             <details className="image-prompt-box no-print">
               <summary>背景画像プロンプト（画像生成に使う内容）</summary>
               <p>{backgroundPrompt}</p>
             </details>
 
-            {payload.imagePrompt && (
+            {safePayload.imagePrompt && (
               <details className="debug-panel raw-prompt-panel no-print">
                 <summary>AIが返した元の図解プロンプト（参考・画像生成には使いません）</summary>
-                <p className="meta">{payload.imagePrompt}</p>
+                <p className="meta">{safePayload.imagePrompt}</p>
               </details>
             )}
 
@@ -1292,7 +1607,7 @@ export default function App() {
               <button
                 type="button"
                 className="primary"
-                onClick={() => void generateImage(messageId, payload)}
+                onClick={() => void generateImage(messageId, safePayload)}
                 disabled={isGeneratingImage || !backgroundPrompt.trim()}
               >
                 {isGeneratingImage
@@ -1349,17 +1664,17 @@ export default function App() {
           <div className="info-grid">
             <div>
               <p className="mini-label">最新更新日時</p>
-              <p className="meta">{formatDateTime(payload.updatedAt)}</p>
+              <p className="meta">{formatDateTime(safePayload.updatedAt)}</p>
             </div>
 
             <div>
               <p className="mini-label">過去運用メモ</p>
-              <p className="meta">{payload.oldPolicyNote ?? "未取得"}</p>
+              <p className="meta">{safePayload.oldPolicyNote ?? "未取得"}</p>
             </div>
           </div>
         </section>
 
-        {payload.references && payload.references.length > 0 && (
+        {safePayload.references && safePayload.references.length > 0 && (
           <section className="answer-section">
             <div className="section-heading-row">
               <h4>参照元</h4>
@@ -1367,14 +1682,14 @@ export default function App() {
             </div>
 
             <ul className="reference-list">
-              {payload.references.map((ref) => (
-                <li key={ref}>{ref}</li>
+              {safePayload.references.map((ref, index) => (
+                <li key={`${ref}-${index}`}>{ref}</li>
               ))}
             </ul>
           </section>
         )}
 
-        {renderSearchDebug(payload.debug?.search)}
+        {renderSearchDebug(safePayload.debug?.search)}
       </article>
     );
   }
