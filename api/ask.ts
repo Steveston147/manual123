@@ -1,9 +1,12 @@
 // FILE: api/ask.ts
 // PATH: api/ask.ts
-/// <reference types="node" />
+
+declare const process: {
+  env: Record<string, string | undefined>;
+};
 
 export const config = {
-  maxDuration: 60,
+  maxDuration: 20,
 };
 
 type RequestLike = {
@@ -31,7 +34,6 @@ type NotionPage = {
   properties?: Record<string, NotionProperty>;
   created_time?: string;
   last_edited_time?: string;
-  archived?: boolean;
 };
 
 type NotionBlock = {
@@ -53,6 +55,7 @@ type SearchDocument = {
   url: string;
   sourceName: string;
   sourceEnvName: string;
+  propertyText: string;
   text: string;
   score: number;
   lastEditedTime: string;
@@ -105,11 +108,16 @@ type AnswerPayload = {
 };
 
 const NOTION_VERSION = "2022-06-28";
-const MAX_DATABASE_PAGES_PER_DB = 35;
-const MAX_SEARCH_RESULTS = 25;
-const MAX_BLOCK_DEPTH = 2;
-const MAX_CONTEXT_DOCS = 12;
-const MAX_CONTEXT_CHARS_PER_DOC = 1800;
+
+const MAX_DATABASE_PAGES_PER_DB = 8;
+const MAX_SEARCH_RESULTS = 6;
+const MAX_BLOCK_DEPTH = 1;
+const MAX_BLOCKS_PER_PAGE = 20;
+const MAX_ENRICH_DOCS = 5;
+const MAX_CONTEXT_DOCS = 5;
+const MAX_CONTEXT_CHARS_PER_DOC = 900;
+const NOTION_FETCH_TIMEOUT_MS = 4500;
+const OPENAI_FETCH_TIMEOUT_MS = 6500;
 
 const DEFAULT_MANAGER_GATE: ManagerGate = {
   canProceedAlone: [
@@ -217,6 +225,10 @@ function getQuestionFromRequest(req: RequestLike): string {
     return body.query.trim();
   }
 
+  if (body && typeof body.message === "string") {
+    return body.message.trim();
+  }
+
   if (req.query && typeof req.query.question === "string") {
     return req.query.question.trim();
   }
@@ -263,6 +275,8 @@ async function searchNotionKnowledge(question: string): Promise<{
   const searchTerms = createSearchTerms(question);
   debug.searchTerms = searchTerms;
 
+  const allDocuments: SearchDocument[] = [];
+
   const databaseConfigs = [
     {
       name: "Main Manual Database",
@@ -294,8 +308,6 @@ async function searchNotionKnowledge(question: string): Promise<{
     },
   ];
 
-  const allDocuments: SearchDocument[] = [];
-
   for (const configItem of databaseConfigs) {
     const kbDebug: KnowledgeBaseDebug = {
       name: configItem.name,
@@ -314,15 +326,24 @@ async function searchNotionKnowledge(question: string): Promise<{
       const pages = await queryDatabasePages(configItem.id);
       kbDebug.fetched = pages.length;
 
-      const docs = await enrichPagesToDocuments({
-        pages,
-        sourceName: configItem.name,
-        sourceEnvName: configItem.envName,
-        searchTerms,
-      });
+      const shellDocs = pages.map((page) =>
+        pageToShellDocument({
+          page,
+          sourceName: configItem.name,
+          sourceEnvName: configItem.envName,
+          searchTerms,
+          question,
+        })
+      );
 
-      kbDebug.selected = docs.filter((doc) => doc.score > 0).length;
-      allDocuments.push(...docs);
+      const selectedShellDocs = shellDocs
+        .sort((a, b) => b.score - a.score)
+        .slice(0, Math.min(3, shellDocs.length));
+
+      const enrichedDocs = await enrichDocumentsWithBlocks(selectedShellDocs, searchTerms, question);
+
+      kbDebug.selected = enrichedDocs.filter((doc) => doc.score > 0).length;
+      allDocuments.push(...enrichedDocs);
     } catch (error) {
       debug.errors.push(`${configItem.envName}: ${getErrorMessage(error)}`);
     }
@@ -350,6 +371,7 @@ async function searchNotionKnowledge(question: string): Promise<{
         sourceName: configItem.name,
         sourceEnvName: configItem.envName,
         searchTerms,
+        question,
       });
 
       if (rootDoc) {
@@ -366,13 +388,23 @@ async function searchNotionKnowledge(question: string): Promise<{
 
   try {
     const notionSearchPages = await searchPagesByNotionSearch(question);
-    const notionSearchDocs = await enrichPagesToDocuments({
-      pages: notionSearchPages,
-      sourceName: "Notion Search API",
-      sourceEnvName: "NOTION_SEARCH",
+    const notionSearchShellDocs = notionSearchPages.map((page) =>
+      pageToShellDocument({
+        page,
+        sourceName: "Notion Search API",
+        sourceEnvName: "NOTION_SEARCH",
+        searchTerms,
+        question,
+      })
+    );
+
+    const enrichedSearchDocs = await enrichDocumentsWithBlocks(
+      notionSearchShellDocs.slice(0, 3),
       searchTerms,
-    });
-    allDocuments.push(...notionSearchDocs);
+      question
+    );
+
+    allDocuments.push(...enrichedSearchDocs);
   } catch (error) {
     debug.errors.push(`Notion Search API: ${getErrorMessage(error)}`);
   }
@@ -386,7 +418,7 @@ async function searchNotionKnowledge(question: string): Promise<{
     .sort((a, b) => b.score - a.score);
 
   const topScore = rescored.length > 0 ? rescored[0].score : 0;
-  const threshold = Math.max(3, Math.floor(topScore * 0.18));
+  const threshold = Math.max(2, Math.floor(topScore * 0.15));
   const selected = rescored
     .filter((doc) => doc.score >= threshold || doc.score > 0)
     .slice(0, MAX_CONTEXT_DOCS);
@@ -418,40 +450,24 @@ function createEmptyDebug(query: string): SearchDebug {
 }
 
 async function queryDatabasePages(databaseId: string): Promise<NotionPage[]> {
-  const pages: NotionPage[] = [];
-  let cursor: string | null = null;
+  const body: Record<string, unknown> = {
+    page_size: MAX_DATABASE_PAGES_PER_DB,
+    sorts: [
+      {
+        timestamp: "last_edited_time",
+        direction: "descending",
+      },
+    ],
+  };
 
-  while (pages.length < MAX_DATABASE_PAGES_PER_DB) {
-    const body: Record<string, unknown> = {
-      page_size: Math.min(25, MAX_DATABASE_PAGES_PER_DB - pages.length),
-    };
+  const response = await notionFetch<NotionQueryResponse>(
+    `/databases/${cleanNotionId(databaseId)}/query`,
+    "POST",
+    body
+  );
 
-    if (cursor) {
-      body.start_cursor = cursor;
-    }
-
-    const response = await notionFetch<NotionQueryResponse>(
-      `/databases/${cleanNotionId(databaseId)}/query`,
-      "POST",
-      body
-    );
-
-    const results = Array.isArray(response.results) ? response.results : [];
-
-    for (const item of results) {
-      if (isNotionPage(item)) {
-        pages.push(item);
-      }
-    }
-
-    if (!response.has_more || !response.next_cursor) {
-      break;
-    }
-
-    cursor = response.next_cursor;
-  }
-
-  return pages;
+  const results = Array.isArray(response.results) ? response.results : [];
+  return results.filter(isNotionPage).slice(0, MAX_DATABASE_PAGES_PER_DB);
 }
 
 async function searchPagesByNotionSearch(question: string): Promise<NotionPage[]> {
@@ -469,52 +485,63 @@ async function searchPagesByNotionSearch(question: string): Promise<NotionPage[]
   });
 
   const results = Array.isArray(response.results) ? response.results : [];
-  return results.filter(isNotionPage);
+  return results.filter(isNotionPage).slice(0, MAX_SEARCH_RESULTS);
 }
 
-async function enrichPagesToDocuments(args: {
-  pages: NotionPage[];
+function pageToShellDocument(args: {
+  page: NotionPage;
   sourceName: string;
   sourceEnvName: string;
   searchTerms: string[];
-}): Promise<SearchDocument[]> {
-  const documents: SearchDocument[] = [];
+  question: string;
+}): SearchDocument {
+  const title = getPageTitle(args.page);
+  const propertyText = getPropertyText(args.page.properties || {});
+  const doc: SearchDocument = {
+    id: args.page.id,
+    title,
+    url: args.page.url || "",
+    sourceName: args.sourceName,
+    sourceEnvName: args.sourceEnvName,
+    propertyText,
+    text: propertyText,
+    score: 0,
+    lastEditedTime: args.page.last_edited_time || args.page.created_time || "",
+  };
 
-  for (const page of args.pages) {
+  doc.score = scoreDocument(doc, args.question, args.searchTerms);
+  return doc;
+}
+
+async function enrichDocumentsWithBlocks(
+  documents: SearchDocument[],
+  searchTerms: string[],
+  question: string
+): Promise<SearchDocument[]> {
+  const targets = documents.slice(0, MAX_ENRICH_DOCS);
+  const enriched: SearchDocument[] = [];
+
+  for (const doc of targets) {
     try {
-      const title = getPageTitle(page);
-      const propertyText = getPropertyText(page.properties || {});
-      const blockText = await readBlockText(page.id, 0);
-      const text = [propertyText, blockText].filter(Boolean).join("\n\n").trim();
+      const blockText = await readBlockText(doc.id, 0);
+      const text = [doc.propertyText, blockText].filter(Boolean).join("\n\n").trim();
 
-      const document: SearchDocument = {
-        id: page.id,
-        title,
-        url: page.url || "",
-        sourceName: args.sourceName,
-        sourceEnvName: args.sourceEnvName,
-        text,
-        score: 0,
-        lastEditedTime: page.last_edited_time || page.created_time || "",
+      const nextDoc: SearchDocument = {
+        ...doc,
+        text: text || doc.text,
       };
 
-      document.score = scoreDocument(document, "", args.searchTerms);
-      documents.push(document);
+      nextDoc.score = scoreDocument(nextDoc, question, searchTerms);
+      enriched.push(nextDoc);
     } catch (error) {
-      documents.push({
-        id: page.id,
-        title: getPageTitle(page),
-        url: page.url || "",
-        sourceName: args.sourceName,
-        sourceEnvName: args.sourceEnvName,
-        text: `ページ本文の取得中にエラーが発生しました: ${getErrorMessage(error)}`,
-        score: 0,
-        lastEditedTime: page.last_edited_time || page.created_time || "",
+      enriched.push({
+        ...doc,
+        text: `${doc.text}\n\nページ本文の取得中にエラーが発生しました: ${getErrorMessage(error)}`,
       });
     }
   }
 
-  return documents;
+  return enriched;
 }
 
 async function readRootPageDocument(args: {
@@ -522,6 +549,7 @@ async function readRootPageDocument(args: {
   sourceName: string;
   sourceEnvName: string;
   searchTerms: string[];
+  question: string;
 }): Promise<SearchDocument | null> {
   const page = await notionFetch<NotionPage>(`/pages/${cleanNotionId(args.pageId)}`, "GET");
   const title = getPageTitle(page);
@@ -535,12 +563,13 @@ async function readRootPageDocument(args: {
     url: page.url || "",
     sourceName: args.sourceName,
     sourceEnvName: args.sourceEnvName,
+    propertyText,
     text,
     score: 0,
     lastEditedTime: page.last_edited_time || page.created_time || "",
   };
 
-  document.score = scoreDocument(document, "", args.searchTerms);
+  document.score = scoreDocument(document, args.question, args.searchTerms);
   return document;
 }
 
@@ -549,33 +578,29 @@ async function readBlockText(blockId: string, depth: number): Promise<string> {
     return "";
   }
 
+  const path = `/blocks/${cleanNotionId(blockId)}/children?page_size=${MAX_BLOCKS_PER_PAGE}`;
+  const response = await notionFetch<NotionQueryResponse>(path, "GET");
+  const blocks = Array.isArray(response.results) ? response.results.filter(isNotionBlock) : [];
+
   const lines: string[] = [];
-  let cursor: string | null = null;
 
-  do {
-    const path = cursor
-      ? `/blocks/${cleanNotionId(blockId)}/children?page_size=100&start_cursor=${encodeURIComponent(cursor)}`
-      : `/blocks/${cleanNotionId(blockId)}/children?page_size=100`;
+  for (const block of blocks.slice(0, MAX_BLOCKS_PER_PAGE)) {
+    const line = getBlockPlainText(block);
+    if (line) {
+      lines.push(line);
+    }
 
-    const response = await notionFetch<NotionQueryResponse>(path, "GET");
-    const blocks = Array.isArray(response.results) ? response.results.filter(isNotionBlock) : [];
-
-    for (const block of blocks) {
-      const line = getBlockPlainText(block);
-      if (line) {
-        lines.push(line);
-      }
-
-      if (block.has_children && depth < MAX_BLOCK_DEPTH) {
+    if (block.has_children && depth < MAX_BLOCK_DEPTH && lines.join("\n").length < 1600) {
+      try {
         const childText = await readBlockText(block.id, depth + 1);
         if (childText) {
           lines.push(childText);
         }
+      } catch {
+        // 子ブロック取得失敗は全体停止させない
       }
     }
-
-    cursor = response.has_more && response.next_cursor ? response.next_cursor : null;
-  } while (cursor);
+  }
 
   return lines.join("\n").trim();
 }
@@ -833,7 +858,7 @@ function scoreDocument(document: SearchDocument, question: string, searchTerms: 
     }
 
     const count = countOccurrences(text, normalizedTerm);
-    score += Math.min(count * 4, 28);
+    score += Math.min(count * 4, 24);
   }
 
   if (document.lastEditedTime) {
@@ -860,13 +885,14 @@ function createSearchTerms(question: string): string[] {
     }
   }
 
-  const importantJapaneseTerms = [
+  const importantTerms = [
     "見積",
     "請求",
     "支払",
     "契約",
     "合意書",
     "バス",
+    "大型バス",
     "宿舎",
     "保険",
     "ビザ",
@@ -880,6 +906,7 @@ function createSearchTerms(question: string): string[] {
     "確認",
     "国際課",
     "クレオテック",
+    "Coupa",
     "RSJP",
     "RWJP",
     "RDSP",
@@ -889,13 +916,13 @@ function createSearchTerms(question: string): string[] {
     "FIU",
   ];
 
-  for (const term of importantJapaneseTerms) {
+  for (const term of importantTerms) {
     if (question.includes(term)) {
       terms.add(term);
     }
   }
 
-  return Array.from(terms).slice(0, 30);
+  return Array.from(terms).slice(0, 25);
 }
 
 function normalizeText(value: string): string {
@@ -978,6 +1005,7 @@ async function buildAnswer(
     "Notionで確認できたことと、確認できなかったことを分けてください。",
     "費用、見積、請求、契約、支払、受入可否、例外対応、先方への確約、個人情報、アレルギー、医療情報は課長確認が必要です。",
     "根拠が弱い場合は、断定せず、課長確認またはNotion確認を促してください。",
+    "回答は短く、実務でそのまま使える形にしてください。",
     "回答は必ずJSONだけで返してください。",
   ].join("\n");
 
@@ -988,7 +1016,7 @@ async function buildAnswer(
     context,
     "",
     "出力条件:",
-    "- answer は、読みやすい本文にする。",
+    "- answer は、初心者向けに読みやすい本文にする。",
     "- steps は、新人が順番に進められる手順にする。",
     "- checklist は、作業前後の確認項目にする。",
     "- managerGate は、課長確認が必要な判断を明確にする。",
@@ -996,34 +1024,39 @@ async function buildAnswer(
   ].join("\n");
 
   try {
-    const response = await fetch("https://api.openai.com/v1/responses", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${openaiApiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: getEnv("OPENAI_MODEL") || "gpt-4.1-mini",
-        input: [
-          {
-            role: "system",
-            content: systemPrompt,
-          },
-          {
-            role: "user",
-            content: userPrompt,
-          },
-        ],
-        text: {
-          format: {
-            type: "json_schema",
-            name: "rsjp_manual_answer",
-            strict: true,
-            schema,
-          },
+    const response = await fetchWithTimeout(
+      "https://api.openai.com/v1/responses",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${openaiApiKey}`,
+          "Content-Type": "application/json",
         },
-      }),
-    });
+        body: JSON.stringify({
+          model: getFastOpenAiModel(),
+          input: [
+            {
+              role: "system",
+              content: systemPrompt,
+            },
+            {
+              role: "user",
+              content: userPrompt,
+            },
+          ],
+          max_output_tokens: 1200,
+          text: {
+            format: {
+              type: "json_schema",
+              name: "rsjp_manual_answer",
+              strict: true,
+              schema,
+            },
+          },
+        }),
+      },
+      OPENAI_FETCH_TIMEOUT_MS
+    );
 
     if (!response.ok) {
       const errorText = await response.text();
@@ -1053,6 +1086,22 @@ async function buildAnswer(
       note: `OpenAI回答生成中にエラーが発生しました: ${getErrorMessage(error)}`,
     });
   }
+}
+
+function getFastOpenAiModel(): string {
+  const fastModel = getEnv("OPENAI_MODEL_FAST");
+
+  if (fastModel) {
+    return fastModel;
+  }
+
+  const configuredModel = getEnv("OPENAI_MODEL");
+
+  if (configuredModel && !configuredModel.includes("5.5")) {
+    return configuredModel;
+  }
+
+  return "gpt-4.1-mini";
 }
 
 function buildContextForAi(documents: SearchDocument[]): string {
@@ -1153,6 +1202,7 @@ function extractOpenAiText(raw: any): string {
           if (typeof contentItem.text === "string") {
             parts.push(contentItem.text);
           }
+
           if (typeof contentItem.value === "string") {
             parts.push(contentItem.value);
           }
@@ -1351,15 +1401,19 @@ async function notionFetch<T>(
     throw new Error("NOTION_API_KEY is missing.");
   }
 
-  const response = await fetch(`https://api.notion.com/v1${path}`, {
-    method,
-    headers: {
-      Authorization: `Bearer ${notionApiKey}`,
-      "Notion-Version": NOTION_VERSION,
-      "Content-Type": "application/json",
+  const response = await fetchWithTimeout(
+    `https://api.notion.com/v1${path}`,
+    {
+      method,
+      headers: {
+        Authorization: `Bearer ${notionApiKey}`,
+        "Notion-Version": NOTION_VERSION,
+        "Content-Type": "application/json",
+      },
+      body: method === "POST" ? JSON.stringify(body || {}) : undefined,
     },
-    body: method === "POST" ? JSON.stringify(body || {}) : undefined,
-  });
+    NOTION_FETCH_TIMEOUT_MS
+  );
 
   if (!response.ok) {
     const errorText = await response.text();
@@ -1369,8 +1423,29 @@ async function notionFetch<T>(
   return (await response.json()) as T;
 }
 
+async function fetchWithTimeout(url: string, options: RequestInit, timeoutMs: number): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    return await fetch(url, {
+      ...options,
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 function cleanNotionId(id: string): string {
-  return id.trim();
+  const trimmed = id.trim();
+
+  if (!trimmed.includes("/")) {
+    return trimmed;
+  }
+
+  const match = trimmed.match(/[a-f0-9]{32}/i) || trimmed.match(/[a-f0-9-]{36}/i);
+  return match ? match[0] : trimmed;
 }
 
 function isNotionPage(value: unknown): value is NotionPage {
@@ -1397,6 +1472,10 @@ function getEnv(name: string): string {
 
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error) {
+    if (error.name === "AbortError") {
+      return "処理がタイムアウトしました。検索対象を絞って再試行してください。";
+    }
+
     return error.message;
   }
 
