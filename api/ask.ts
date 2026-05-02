@@ -112,7 +112,7 @@ type SourceConfig = {
   name: string;
   envName: string;
   id: string;
-  type: "database" | "rootPage" | "search";
+  type: "database";
 };
 
 type SearchDocument = {
@@ -120,7 +120,7 @@ type SearchDocument = {
   title: string;
   url: string;
   sourceName: string;
-  sourceType: string;
+  sourceType: "database";
   text: string;
   propertyText: string;
   blockText: string;
@@ -136,24 +136,21 @@ type SearchDocument = {
 
 const NOTION_VERSION = "2022-06-28";
 
-const MAX_DATABASE_SCAN_PAGES_PER_DB = 80;
-const MAX_DATABASE_TARGETED_PAGES_PER_DB = 80;
-const MAX_DATABASE_TOTAL_PAGES_PER_DB = 120;
-const MAX_SEARCH_PAGES = 10;
-const MAX_ROOT_PAGES = 2;
+const MAX_DATABASE_SCAN_PAGES = 180;
+const MAX_DATABASE_TARGETED_PAGES = 120;
+const MAX_DATABASE_TOTAL_PAGES = 220;
 const MAX_SELECTED_DOCS = 7;
-const MAX_SEEDS_TO_ENRICH = 14;
-const MAX_BLOCKS_PER_PAGE = 55;
-const MAX_CHILD_BLOCKS_PER_PARENT = 16;
-const MAX_CONTEXT_CHARS_PER_DOC = 1800;
-const MAX_OUTPUT_TOKENS = 1700;
+const MAX_SEEDS_TO_ENRICH = 18;
+const MAX_BLOCKS_PER_PAGE = 70;
+const MAX_CHILD_BLOCKS_PER_PARENT = 18;
+const MAX_CONTEXT_CHARS_PER_DOC = 2000;
+const MAX_OUTPUT_TOKENS = 1800;
 
-const MIN_CONFIDENT_SCORE = 45;
-const MIN_DIRECT_ANSWER_SCORE = 70;
-const MIN_SEARCH_API_SCORE_WHEN_DATABASE_HIT_EXISTS = 120;
+const MIN_CONFIDENT_SCORE = 70;
+const MIN_DIRECT_ANSWER_SCORE = 180;
 
-const NOTION_TIMEOUT_MS = 10000;
-const OPENAI_TIMEOUT_MS = 18000;
+const NOTION_TIMEOUT_MS = 12000;
+const OPENAI_TIMEOUT_MS = 20000;
 
 const QUESTION_PROPERTY_NAMES = [
   "Question",
@@ -213,7 +210,7 @@ const STATUS_PROPERTY_NAMES = [
 
 const DEFAULT_MANAGER_GATE: ManagerGate = {
   canProceedAlone: [
-    "Notionに明記された手順を確認する",
+    "Main Manual Databaseに明記された手順を確認する",
     "事実関係を整理する",
     "必要情報を洗い出す",
     "既存テンプレートに沿って下書きを作成する",
@@ -232,11 +229,11 @@ const DEFAULT_MANAGER_GATE: ManagerGate = {
     "先方へメールや回答を送る前",
     "金額、日程、受入可否、支払条件などを確定する前",
     "通常ルールから外れる可能性があるとき",
-    "Notion上の記載だけでは判断できないとき",
+    "Main Manual Database上の記載だけでは判断できないとき",
     "自分で判断してよいか少しでも迷ったとき",
   ],
   managerQuestionTemplate:
-    "以下の件について、Notion上では〇〇と理解しました。\n先方へ回答する前に確認させてください。\nこの理解で進めてよろしいでしょうか。",
+    "以下の件について、Main Manual Database上では〇〇と理解しました。\n先方へ回答する前に確認させてください。\nこの理解で進めてよろしいでしょうか。",
 };
 
 export default async function handler(req: RequestLike, res: ResponseLike): Promise<void> {
@@ -257,6 +254,7 @@ export default async function handler(req: RequestLike, res: ResponseLike): Prom
       ok: true,
       name: "RSJP Manual AI API",
       endpoint: "/api/ask",
+      mode: "Main Manual Database only",
       message: "API Function is available. Please send POST { question: string }.",
       updatedAt: new Date().toISOString(),
     });
@@ -278,7 +276,7 @@ export default async function handler(req: RequestLike, res: ResponseLike): Prom
     sendJson(
       res,
       200,
-      createFallbackPayload({
+      createManualUnknownPayload({
         question: "",
         documents: [],
         debug: createEmptyDebug(""),
@@ -300,7 +298,7 @@ export default async function handler(req: RequestLike, res: ResponseLike): Prom
     sendJson(
       res,
       200,
-      createFallbackPayload({
+      createManualUnknownPayload({
         question,
         documents: [],
         debug,
@@ -369,113 +367,52 @@ async function searchKnowledge(question: string): Promise<{
 }> {
   const debug = createEmptyDebug(question);
   const notionApiKey = getEnv("NOTION_API_KEY");
+  const mainDatabaseId = getEnv("NOTION_DATABASE_ID");
 
   if (!notionApiKey) {
     debug.errors.push("NOTION_API_KEY が設定されていません。");
     return { documents: [], debug };
   }
 
+  if (!mainDatabaseId) {
+    debug.errors.push("NOTION_DATABASE_ID が設定されていません。Main Manual Databaseを参照できません。");
+    return { documents: [], debug };
+  }
+
   const searchTerms = createSearchTerms(question);
   const anchorTerms = extractAnchorTerms(question);
-  debug.searchTerms = Array.from(new Set([...searchTerms, ...anchorTerms]));
+  const topicTerms = extractPrimaryTopicTerms(question);
+
+  debug.searchTerms = Array.from(new Set([...searchTerms, ...anchorTerms, ...topicTerms]));
   debug.searchQueries = createSearchQueries(question, debug.searchTerms);
 
-  const databaseSources: SourceConfig[] = [
-    {
-      name: "Main Manual Database",
-      envName: "NOTION_DATABASE_ID",
-      id: getEnv("NOTION_DATABASE_ID"),
-      type: "database",
-    },
-    {
-      name: "Manual Database 2",
-      envName: "NOTION_DATABASE_ID_2",
-      id: getEnv("NOTION_DATABASE_ID_2"),
-      type: "database",
-    },
-    {
-      name: "Manual Database 3",
-      envName: "NOTION_DATABASE_ID_3",
-      id: getEnv("NOTION_DATABASE_ID_3"),
-      type: "database",
-    },
-  ];
-
-  const rootPageSources: SourceConfig[] = [
-    {
-      name: "Root Page 1",
-      envName: "NOTION_ROOT_PAGE_ID",
-      id: getEnv("NOTION_ROOT_PAGE_ID"),
-      type: "rootPage",
-    },
-    {
-      name: "Root Page 2",
-      envName: "NOTION_ROOT_PAGE_ID_2",
-      id: getEnv("NOTION_ROOT_PAGE_ID_2"),
-      type: "rootPage",
-    },
-  ];
+  const source: SourceConfig = {
+    name: "Main Manual Database",
+    envName: "NOTION_DATABASE_ID",
+    id: mainDatabaseId,
+    type: "database",
+  };
 
   const seedDocuments: SearchDocument[] = [];
 
-  const databaseTasks = databaseSources.map(async (source) => {
-    if (!source.id) {
-      debug.sourceCounts[source.name] = 0;
-      return;
-    }
+  try {
+    const pages = await queryDatabasePages(source.id, question, debug.searchTerms);
+    debug.databasePageCount = pages.length;
+    debug.seedPageCount = pages.length;
+    debug.sourceCounts[source.name] = pages.length;
+    debug.sourceCounts["Manual Database 2"] = 0;
+    debug.sourceCounts["Manual Database 3"] = 0;
+    debug.sourceCounts["Root Page 1"] = 0;
+    debug.sourceCounts["Root Page 2"] = 0;
+    debug.sourceCounts["Notion Search API"] = 0;
 
-    try {
-      const pages = await queryDatabasePages(source.id, question, debug.searchTerms);
-      debug.databasePageCount += pages.length;
-      debug.sourceCounts[source.name] = pages.length;
-
-      for (const page of pages) {
-        seedDocuments.push(pageToDocument(page, source, question, debug.searchTerms));
-      }
-    } catch (error) {
-      debug.errors.push(`${source.envName}: ${getErrorMessage(error)}`);
-      debug.sourceCounts[source.name] = 0;
-    }
-  });
-
-  const searchTask = searchNotionPages(question)
-    .then((pages) => {
-      debug.seedPageCount += pages.length;
-      debug.sourceCounts["Notion Search API"] = pages.length;
-
-      const source: SourceConfig = {
-        name: "Notion Search API",
-        envName: "NOTION_SEARCH",
-        id: "",
-        type: "search",
-      };
-
-      for (const page of pages) {
-        seedDocuments.push(pageToDocument(page, source, question, debug.searchTerms));
-      }
-    })
-    .catch((error) => {
-      debug.errors.push(`NOTION_SEARCH: ${getErrorMessage(error)}`);
-      debug.sourceCounts["Notion Search API"] = 0;
-    });
-
-  const rootTasks = rootPageSources.slice(0, MAX_ROOT_PAGES).map(async (source) => {
-    if (!source.id) {
-      debug.sourceCounts[source.name] = 0;
-      return;
-    }
-
-    try {
-      const page = await getPage(source.id);
-      debug.sourceCounts[source.name] = 1;
+    for (const page of pages) {
       seedDocuments.push(pageToDocument(page, source, question, debug.searchTerms));
-    } catch (error) {
-      debug.errors.push(`${source.envName}: ${getErrorMessage(error)}`);
-      debug.sourceCounts[source.name] = 0;
     }
-  });
-
-  await Promise.all([...databaseTasks, searchTask, ...rootTasks]);
+  } catch (error) {
+    debug.errors.push(`${source.envName}: ${getErrorMessage(error)}`);
+    debug.sourceCounts[source.name] = 0;
+  }
 
   const dedupedSeeds = dedupeDocuments(seedDocuments)
     .map((doc) => ({
@@ -566,16 +503,16 @@ async function queryDatabasePages(
 
   const [targetedPages, scanPages] = await Promise.all([targetedTask, scanTask]);
 
-  return dedupeNotionPages([...targetedPages, ...scanPages]).slice(0, MAX_DATABASE_TOTAL_PAGES_PER_DB);
+  return dedupeNotionPages([...targetedPages, ...scanPages]).slice(0, MAX_DATABASE_TOTAL_PAGES);
 }
 
 async function queryDatabaseScanPages(databaseId: string): Promise<NotionPage[]> {
   const pages: NotionPage[] = [];
   let cursor: string | null | undefined = undefined;
 
-  while (pages.length < MAX_DATABASE_SCAN_PAGES_PER_DB) {
+  while (pages.length < MAX_DATABASE_SCAN_PAGES) {
     const body: Record<string, unknown> = {
-      page_size: Math.min(100, MAX_DATABASE_SCAN_PAGES_PER_DB - pages.length),
+      page_size: Math.min(100, MAX_DATABASE_SCAN_PAGES - pages.length),
       sorts: [
         {
           timestamp: "last_edited_time",
@@ -604,7 +541,7 @@ async function queryDatabaseScanPages(databaseId: string): Promise<NotionPage[]>
     cursor = response.next_cursor;
   }
 
-  return pages.slice(0, MAX_DATABASE_SCAN_PAGES_PER_DB);
+  return pages.slice(0, MAX_DATABASE_SCAN_PAGES);
 }
 
 async function queryDatabaseTargetedPages(
@@ -623,9 +560,9 @@ async function queryDatabaseTargetedPages(
     const pages: NotionPage[] = [];
     let cursor: string | null | undefined = undefined;
 
-    while (pages.length < MAX_DATABASE_TARGETED_PAGES_PER_DB) {
+    while (pages.length < MAX_DATABASE_TARGETED_PAGES) {
       const body: Record<string, unknown> = {
-        page_size: Math.min(100, MAX_DATABASE_TARGETED_PAGES_PER_DB - pages.length),
+        page_size: Math.min(100, MAX_DATABASE_TARGETED_PAGES - pages.length),
         filter,
         sorts: [
           {
@@ -655,7 +592,7 @@ async function queryDatabaseTargetedPages(
       cursor = response.next_cursor;
     }
 
-    return pages.slice(0, MAX_DATABASE_TARGETED_PAGES_PER_DB);
+    return pages.slice(0, MAX_DATABASE_TARGETED_PAGES);
   } catch {
     return [];
   }
@@ -839,6 +776,7 @@ function createDatabaseFilterTerms(question: string, searchTerms: string[]): str
   const candidates = [
     question,
     stripQuestionSuffix(question),
+    ...extractPrimaryTopicTerms(question),
     ...extractAnchorTerms(question),
     ...searchTerms,
   ];
@@ -850,29 +788,7 @@ function createDatabaseFilterTerms(question: string, searchTerms: string[]): str
         .filter((item) => item.length >= 2)
         .filter((item) => !isWeakSearchTerm(item))
     )
-  ).slice(0, 10);
-}
-
-async function searchNotionPages(question: string): Promise<NotionPage[]> {
-  const response = await notionFetch<NotionListResponse>("/search", "POST", {
-    query: question,
-    page_size: MAX_SEARCH_PAGES,
-    filter: {
-      property: "object",
-      value: "page",
-    },
-    sort: {
-      direction: "descending",
-      timestamp: "last_edited_time",
-    },
-  });
-
-  const results = Array.isArray(response.results) ? response.results : [];
-  return results.filter(isNotionPage).slice(0, MAX_SEARCH_PAGES);
-}
-
-async function getPage(pageId: string): Promise<NotionPage> {
-  return await notionFetch<NotionPage>(`/pages/${cleanNotionId(pageId)}`, "GET");
+  ).slice(0, 12);
 }
 
 async function readPageBlockText(pageId: string): Promise<string> {
@@ -891,7 +807,7 @@ async function readPageBlockText(pageId: string): Promise<string> {
       lines.push(text);
     }
 
-    if (block.has_children && lines.join("\n").length < 2800) {
+    if (block.has_children && lines.join("\n").length < 3200) {
       try {
         const childResponse = await notionFetch<NotionListResponse>(
           `/blocks/${cleanNotionId(block.id)}/children?page_size=${MAX_CHILD_BLOCKS_PER_PARENT}`,
@@ -1269,22 +1185,22 @@ async function buildAnswer(
   debug: SearchDebug
 ): Promise<AnswerPayload> {
   if (documents.length === 0) {
-    return createFallbackPayload({
+    return createManualUnknownPayload({
       question,
       documents,
       debug,
-      note: "Notionで関連候補を確認できませんでした。検索語を変えるか、Notion DBの共有設定を確認してください。",
+      note: "Main Manual Databaseで関連候補を確認できませんでした。",
     });
   }
 
   const topScore = documents[0]?.score || 0;
 
-  if (topScore < MIN_CONFIDENT_SCORE) {
-    return createFallbackPayload({
+  if (!hasEnoughEvidence(question, documents)) {
+    return createManualUnknownPayload({
       question,
       documents,
       debug,
-      note: `関連候補のスコアが低いため、断定回答を避けています。最高スコアは ${topScore} です。Notionの該当ページ名、Question欄、Keyword欄を確認してください。`,
+      note: `Main Manual Database内の根拠が十分ではないため、断定回答を避けています。最高スコアは ${topScore} です。`,
     });
   }
 
@@ -1296,11 +1212,11 @@ async function buildAnswer(
   const openaiApiKey = getEnv("OPENAI_API_KEY");
 
   if (!openaiApiKey) {
-    return createFallbackPayload({
+    return createManualUnknownPayload({
       question,
       documents,
       debug,
-      note: "OPENAI_API_KEY が設定されていないため、Notion検索結果をもとに暫定回答を表示しています。",
+      note: "OPENAI_API_KEY が設定されていないため、AI回答を生成できません。Main Manual Databaseの参照候補のみ表示します。",
     });
   }
 
@@ -1309,18 +1225,16 @@ async function buildAnswer(
 
   const systemPrompt = [
     "あなたはRSJP業務マニュアルAIです。",
-    "目的は、新人職員が迷わず進め、危ない判断では課長確認で止まれるようにすることです。",
-    "Notionの参照情報に基づいて、日本語で実務的に回答してください。",
+    "このアプリはMain Manual Database専用です。",
+    "Manual Database 2、Manual Database 3、Root Page、Notion Search API、外部Web、一般知識は参照しません。",
+    "目的は、新人職員が業務手順を確認し、危ない判断では課長確認で止まれるようにすることです。",
+    "必ずMain Manual Databaseから取得した参照情報だけに基づいて、日本語で回答してください。",
     "外部知識、一般知識、推測、連想で不足情報を補ってはいけません。",
-    "Notion参照情報に明記されていない学校名、団体名、住所、電話番号、URL、担当部署名、制度名、料金、日付を作ってはいけません。",
-    "略称や固有語は、Notion参照情報の文脈だけで扱ってください。外部の学校名や別組織に置き換えてはいけません。",
-    "Reference 1 は最も重要な参照元です。まずReference 1を優先してください。",
-    "Question欄とAnswer欄に明記されている内容を最優先してください。",
-    "Answer欄がある場合は、Answer欄の内容を中心に回答し、勝手に補足しないでください。",
-    "Notion Search APIの結果とManual Databaseの結果が矛盾する場合は、Manual Databaseを優先してください。",
+    "参照情報に明記されていない学校名、団体名、住所、電話番号、URL、担当部署名、制度名、料金、日付を作ってはいけません。",
+    "Reference 1 は最も重要な参照元です。ただしReference 1だけで不足する場合はReference 2以降も使ってください。",
+    "質問の主題と参照情報がずれている場合は、無理に回答せず『Main Manual Databaseでは確認できません』と書いてください。",
     "Notionで確認できたことと、確認できなかったことを分けてください。",
     "費用、見積、請求、契約、支払、受入可否、例外対応、先方への確約、個人情報、アレルギー、医療情報は課長確認が必要です。",
-    "根拠が弱い場合は、断定せず、課長確認またはNotion確認を促してください。",
     "回答は短く、実務でそのまま使える形にしてください。",
     "回答は必ずJSONだけで返してください。",
   ].join("\n");
@@ -1328,17 +1242,15 @@ async function buildAnswer(
   const userPrompt = [
     `質問: ${question}`,
     "",
-    "Notionから取得した参照情報:",
+    "Main Manual Databaseから取得した参照情報:",
     context,
     "",
     "出力条件:",
     "- answer は、初心者向けに読みやすい本文にする。",
-    "- Notionに明記されているAnswer欄の内容は、勝手に省略・否定しない。",
-    "- 参照元がQuestion/Answer形式の場合は、そのAnswerを中心に回答する。",
-    "- Notionに書かれていない学校名、住所、電話番号、URL、担当部署、料金、日付は絶対に追加しない。",
-    "- 略称や固有語を外部知識で補完しない。",
-    "- 不足情報がある場合は、補完せず『Notionでは確認できません』と書く。",
-    "- steps は、新人が順番に進められる手順にする。",
+    "- Main Manual Databaseに書かれていない内容は補足しない。",
+    "- 主題が一致していない参照元をもとに回答しない。",
+    "- 不足情報がある場合は、補完せず『Main Manual Databaseでは確認できません』と書く。",
+    "- steps は、参照情報に基づいて新人が順番に進められる手順にする。",
     "- checklist は、作業前後の確認項目にする。",
     "- managerGate は、課長確認が必要な判断を明確にする。",
     "- imagePrompt は、日本語文字を画像生成AIに描かせない前提で、業務フロー図の背景用プロンプトにする。",
@@ -1382,7 +1294,7 @@ async function buildAnswer(
     if (!response.ok) {
       const errorText = await response.text();
 
-      return createFallbackPayload({
+      return createManualUnknownPayload({
         question,
         documents,
         debug,
@@ -1396,13 +1308,38 @@ async function buildAnswer(
 
     return normalizeAnswerPayload(parsed, documents, debug);
   } catch (error) {
-    return createFallbackPayload({
+    return createManualUnknownPayload({
       question,
       documents,
       debug,
       note: `OpenAI回答生成中にエラーが発生しました: ${getErrorMessage(error)}`,
     });
   }
+}
+
+function hasEnoughEvidence(question: string, documents: SearchDocument[]): boolean {
+  if (documents.length === 0) {
+    return false;
+  }
+
+  const topDocument = documents[0];
+  const topScore = topDocument.score;
+
+  if (topScore < MIN_CONFIDENT_SCORE) {
+    return false;
+  }
+
+  const primaryTerms = extractPrimaryTopicTerms(question);
+
+  if (primaryTerms.length === 0) {
+    return topScore >= MIN_CONFIDENT_SCORE;
+  }
+
+  const hasPrimaryMatch = documents
+    .slice(0, Math.min(3, documents.length))
+    .some((doc) => documentMatchesAnyTerm(doc, primaryTerms));
+
+  return hasPrimaryMatch && topScore >= MIN_CONFIDENT_SCORE;
 }
 
 function createDirectAnswerPayloadIfReliable(
@@ -1416,11 +1353,11 @@ function createDirectAnswerPayloadIfReliable(
     return null;
   }
 
-  if (topDocument.sourceType !== "database") {
+  if (topDocument.score < MIN_DIRECT_ANSWER_SCORE) {
     return null;
   }
 
-  if (topDocument.score < MIN_DIRECT_ANSWER_SCORE) {
+  if (isComplexOperationalQuestion(question)) {
     return null;
   }
 
@@ -1431,38 +1368,60 @@ function createDirectAnswerPayloadIfReliable(
   }
 
   const answer = [
-    "NotionのAnswer欄では、以下のように案内されています。",
+    "Main Manual Databaseの記載では、以下のように案内されています。",
     "",
     answerText,
     "",
-    "※この回答はNotionのAnswer欄をもとにしています。Notionに記載のない学校名・住所・電話番号・URLなどは補足していません。",
+    "※この回答はMain Manual Databaseの記載をもとにしています。記載のない情報は補足していません。",
   ].join("\n");
 
   return {
     answer,
     managerGate: createSafeManagerGateForDirectAnswer(topDocument),
     steps: [
-      "採用されたNotionページのQuestion欄とAnswer欄を確認する",
-      "Answer欄の内容をもとに案内する",
-      "Notionに記載のない情報を追加しない",
+      "採用されたMain Manual Databaseの参照元を確認する",
+      "記載内容をもとに案内または作業を進める",
+      "Main Manual Databaseに記載のない情報を追加しない",
       "例外対応、費用、安全面、契約判断が関係する場合は課長確認を行う",
     ],
     checklist: [
-      { text: "採用されたNotionページが質問内容と一致している" },
-      { text: "Answer欄の内容を確認した" },
-      { text: "Notionにない固有名詞・住所・電話番号・URLを追加していない" },
+      { text: "採用されたMain Manual Databaseのページが質問内容と一致している" },
+      { text: "参照元の記載内容を確認した" },
+      { text: "Main Manual Databaseにない情報を追加していない" },
       { text: "例外対応や判断が必要な内容は課長確認に回した" },
     ],
-    imagePrompt: buildImagePrompt("RSJP FAQ answer workflow"),
+    imagePrompt: buildImagePrompt("RSJP manual answer workflow"),
     imageUrl: "",
     references: buildReferences(documents),
     updatedAt: new Date().toISOString(),
     oldPolicyNote:
-      "FAQ形式のNotionページにAnswer欄があるため、外部知識で補完せず、NotionのAnswer欄を優先して回答しています。",
+      "Main Manual Databaseの明確な記載を優先し、外部知識で補完せずに回答しています。",
     debug: {
       search: debug,
     },
   };
+}
+
+function isComplexOperationalQuestion(question: string): boolean {
+  const compact = normalizeCompactText(question);
+  const complexMarkers = [
+    "順番",
+    "一連",
+    "流れ",
+    "手順",
+    "から",
+    "まで",
+    "見積",
+    "請求",
+    "発注",
+    "支払",
+    "契約",
+    "処理",
+    "例外",
+    "キャンセル",
+  ];
+
+  return complexMarkers.filter((marker) => compact.includes(normalizeCompactText(marker))).length >= 2;
 }
 
 function extractDirectAnswerText(document: SearchDocument): string {
@@ -1483,24 +1442,24 @@ function extractDirectAnswerText(document: SearchDocument): string {
 function createSafeManagerGateForDirectAnswer(document: SearchDocument): ManagerGate {
   return {
     canProceedAlone: [
-      "NotionのAnswer欄に書かれた範囲を確認する",
-      "Notionの記載をもとに案内文の下書きを作成する",
-      "参照元ページとAnswer欄を確認する",
+      "Main Manual Databaseに書かれた範囲を確認する",
+      "Main Manual Databaseの記載をもとに案内文や作業メモを作成する",
+      "参照元ページを確認する",
     ],
     needManagerApproval: [
-      "Notionにない内容を補足して案内する場合",
+      "Main Manual Databaseにない内容を補足して案内する場合",
       "費用、契約、支払、キャンセル、受入可否、安全面に関わる判断がある場合",
       "参加者や相手機関に対して例外的な対応を認める場合",
-      "Notionの記載と実際の運用が違う可能性がある場合",
+      "Main Manual Databaseの記載と実際の運用が違う可能性がある場合",
     ],
     approvalTiming: [
       "先方へ回答する前",
-      "Notionにない情報を追加したくなった時",
+      "Main Manual Databaseにない情報を追加したくなった時",
       "例外対応や判断を含む案内をする前",
     ],
     managerQuestionTemplate: [
-      `以下のNotionページを参照しました：${document.title}`,
-      "Answer欄では〇〇と記載されています。",
+      `以下のMain Manual Databaseページを参照しました：${document.title}`,
+      "記載では〇〇と理解しました。",
       "この内容をもとに先方へ案内してよろしいでしょうか。",
     ].join("\n"),
   };
@@ -1542,7 +1501,7 @@ function buildContextForAi(documents: SearchDocument[]): string {
         document.categoryText ? `Category field: ${document.categoryText}` : "",
         document.programText ? `Program field: ${document.programText}` : "",
         "Strict safety rule:",
-        "Use only the information written in this reference. Do not add school names, addresses, phone numbers, URLs, fees, dates, or department names that are not written here.",
+        "Use only the information written in this Main Manual Database reference. Do not add school names, addresses, phone numbers, URLs, fees, dates, or department names that are not written here.",
         "Content:",
         excerpt,
       ]
@@ -1671,7 +1630,7 @@ function normalizeAnswerPayload(
 ): AnswerPayload {
   const managerGate = normalizeManagerGate(raw.managerGate);
   const steps = normalizeStringArray(raw.steps, [
-    "Notionの参照元を確認する",
+    "Main Manual Databaseの参照元を確認する",
     "現在の案件に当てはまる部分を整理する",
     "判断が必要な箇所は課長に確認する",
   ]);
@@ -1679,7 +1638,7 @@ function normalizeAnswerPayload(
   const references = buildReferences(documents);
 
   return {
-    answer: normalizeString(raw.answer, "回答を生成できませんでした。参照元を確認してください。"),
+    answer: normalizeString(raw.answer, "回答を生成できませんでした。Main Manual Databaseの参照元を確認してください。"),
     managerGate,
     steps,
     checklist,
@@ -1687,14 +1646,14 @@ function normalizeAnswerPayload(
     imageUrl: "",
     references,
     updatedAt: new Date().toISOString(),
-    oldPolicyNote: normalizeString(raw.oldPolicyNote, "Notionの参照情報をもとに回答しています。"),
+    oldPolicyNote: normalizeString(raw.oldPolicyNote, "Main Manual Databaseの参照情報をもとに回答しています。"),
     debug: {
       search: debug,
     },
   };
 }
 
-function createFallbackPayload(args: {
+function createManualUnknownPayload(args: {
   question: string;
   documents: SearchDocument[];
   debug: SearchDebug;
@@ -1703,36 +1662,37 @@ function createFallbackPayload(args: {
   const topTitles = args.documents.slice(0, 5).map((doc) => `・${doc.title}`).join("\n");
 
   const answer = [
-    "Notion検索結果をもとにした暫定回答です。",
+    "Main Manual Databaseでは、質問に対する十分な根拠を確認できませんでした。",
     "",
     args.note,
     "",
     "確認できた参照候補:",
-    topTitles || "・関連するNotionページを確認できませんでした。",
+    topTitles || "・関連するMain Manual Databaseページを確認できませんでした。",
     "",
-    "次に確認すること:",
-    "1. 参照元に該当しそうなページがある場合は、Notionで直接内容を確認してください。",
-    "2. 費用・契約・支払・例外対応・個人情報に関わる場合は、先方へ回答する前に課長確認をしてください。",
-    "3. 関連ページが出ない場合は、検索語、Notion DBの共有設定、Vercel環境変数を確認してください。",
+    "対応方針:",
+    "1. Main Manual Database内の該当ページを直接確認してください。",
+    "2. 参照候補が質問の主題とずれている場合は、その内容で回答しないでください。",
+    "3. 費用・契約・支払・例外対応・個人情報に関わる場合は、先方へ回答する前に課長確認をしてください。",
+    "4. 学生向けFAQやプログラム詳細に関する質問は、別アプリまたはFAQ用ナレッジで確認してください。",
   ].join("\n");
 
   return {
     answer,
     managerGate: DEFAULT_MANAGER_GATE,
     steps: [
-      "検索デバッグで、どのナレッジベースが読まれているか確認する",
+      "検索デバッグで、Main Manual Databaseが読まれているか確認する",
       "参照元に関連ページが出ているか確認する",
-      "関連ページが出ない場合は、Notionの共有設定と環境変数を確認する",
+      "関連ページが出ない場合は、Main Manual Databaseのページ名・キーワード・本文を確認する",
       "先方へ確定回答を送る前に、課長確認を行う",
     ],
     checklist: [
       { text: "NOTION_API_KEY がVercelに設定されている" },
       { text: "NOTION_DATABASE_ID がVercelに設定されている" },
-      { text: "NOTION_DATABASE_ID_2 / NOTION_DATABASE_ID_3 が必要に応じて設定されている" },
-      { text: "Notion DBをIntegrationに共有している" },
+      { text: "Main Manual DatabaseがNotion Integrationに共有されている" },
+      { text: "参照候補が質問の主題と一致している" },
       { text: "費用・契約・例外対応は課長確認に回す" },
     ],
-    imagePrompt: buildImagePrompt("API接続確認"),
+    imagePrompt: buildImagePrompt("Main Manual Database confirmation workflow"),
     imageUrl: "",
     references: buildReferences(args.documents),
     updatedAt: new Date().toISOString(),
@@ -1767,7 +1727,7 @@ function normalizeManagerGate(value: unknown): ManagerGate {
 function normalizeChecklist(value: unknown): ChecklistItem[] {
   if (!Array.isArray(value)) {
     return [
-      { text: "Notionの参照元を確認した" },
+      { text: "Main Manual Databaseの参照元を確認した" },
       { text: "判断が必要な点を課長確認に回した" },
     ];
   }
@@ -1793,7 +1753,7 @@ function normalizeChecklist(value: unknown): ChecklistItem[] {
   return items.length > 0
     ? items
     : [
-        { text: "Notionの参照元を確認した" },
+        { text: "Main Manual Databaseの参照元を確認した" },
         { text: "判断が必要な点を課長確認に回した" },
       ];
 }
@@ -1807,7 +1767,7 @@ function buildReferences(documents: SearchDocument[]): string[] {
     return `${doc.title} (${doc.sourceName})`;
   });
 
-  return references.length > 0 ? references : ["Notion参照元なし"];
+  return references.length > 0 ? references : ["Main Manual Database参照元なし"];
 }
 
 function buildImagePrompt(topic: string): string {
@@ -1849,13 +1809,21 @@ function createSearchTerms(question: string): string[] {
 
   const importantTerms = [
     "見積",
+    "見積書",
     "請求",
+    "請求書",
     "支払",
     "支払い",
     "契約",
     "合意書",
+    "発注",
+    "COUPA",
+    "Coupa",
+    "業者",
     "バス",
     "大型バス",
+    "チャーターバス",
+    "ヤサカ",
     "宿舎",
     "保険",
     "ビザ",
@@ -1869,7 +1837,6 @@ function createSearchTerms(question: string): string[] {
     "確認",
     "国際課",
     "クレオテック",
-    "Coupa",
     "RSJP",
     "RWJP",
     "RDSP",
@@ -1881,28 +1848,6 @@ function createSearchTerms(question: string): string[] {
     "BKC",
     "衣笠",
     "朱雀",
-    "通学",
-    "通学方法",
-    "通勤",
-    "シャトル",
-    "キャンパス",
-    "修了式",
-    "帰国",
-    "空港",
-    "関空",
-    "伊丹",
-    "JR",
-    "阪急",
-    "バス",
-    "電車",
-    "タクシー",
-    "チップ",
-    "歯医者",
-    "病院",
-    "天気",
-    "スマホ",
-    "SIM",
-    "WiFi",
   ];
 
   for (const term of importantTerms) {
@@ -1918,7 +1863,7 @@ function createSearchTerms(question: string): string[] {
     }
   }
 
-  return Array.from(terms).slice(0, 35);
+  return Array.from(terms).slice(0, 40);
 }
 
 function extractUsefulJapaneseTerms(question: string): string[] {
@@ -1940,28 +1885,25 @@ function extractUsefulJapaneseTerms(question: string): string[] {
   }
 
   const commonWords = [
-    "通学方法",
-    "通学",
-    "修了式",
-    "帰国",
-    "空港",
-    "歯医者",
-    "スマホ",
-    "チップ",
-    "天気",
-    "持ち物",
-    "キャンパス",
-    "バス",
-    "電車",
-    "請求方法",
-    "見積もり",
-    "申込方法",
+    "大型バス",
+    "チャーターバス",
+    "バス手配",
+    "発注方法",
+    "見積依頼",
+    "見積書",
+    "請求書",
+    "請求書処理",
+    "支払処理",
+    "業者発注",
+    "人数変更",
+    "交通費",
+    "宿舎手配",
+    "保険加入",
+    "ビザ書類",
+    "招へい理由書",
     "参加資格",
     "参加対象外",
     "アレルギー",
-    "保険",
-    "ビザ",
-    "招へい理由書",
   ];
 
   for (const word of commonWords) {
@@ -1971,6 +1913,31 @@ function extractUsefulJapaneseTerms(question: string): string[] {
   }
 
   return terms;
+}
+
+function extractPrimaryTopicTerms(question: string): string[] {
+  const compact = normalizeCompactText(question);
+  const topicGroups = [
+    ["大型バス", "チャーターバス", "バス手配", "貸切バス", "ヤサカ"],
+    ["Coupa", "COUPA", "クーパ", "発注", "業者発注"],
+    ["見積", "見積書", "見積依頼"],
+    ["請求", "請求書", "請求書処理"],
+    ["支払", "支払い", "支払処理"],
+    ["宿舎", "宿泊", "エポック", "ホテル"],
+    ["保険", "学研賠", "学研災"],
+    ["ビザ", "招へい", "招へい理由書"],
+    ["契約", "合意書", "協定"],
+    ["キャンセル", "取消", "返金"],
+  ];
+
+  for (const group of topicGroups) {
+    const matched = group.some((term) => compact.includes(normalizeCompactText(term)));
+    if (matched) {
+      return group;
+    }
+  }
+
+  return [];
 }
 
 function extractAnchorTerms(question: string): string[] {
@@ -1997,6 +1964,7 @@ function extractAnchorTerms(question: string): string[] {
     "CityUHK",
     "Coupa",
     "Convera",
+    "COUPA",
     "衣笠",
     "朱雀",
     "茨木",
@@ -2036,7 +2004,7 @@ function createSearchQueries(question: string, terms: string[]): string[] {
   const queries = [question];
 
   if (terms.length > 0) {
-    queries.push(terms.slice(0, 10).join(" "));
+    queries.push(terms.slice(0, 12).join(" "));
   }
 
   return Array.from(new Set(queries.filter(Boolean)));
@@ -2058,6 +2026,7 @@ function scoreDocument(document: SearchDocument, question: string, searchTerms: 
   const text = normalizeText(document.text);
   const textCompact = normalizeCompactText(document.text);
   const anchorTerms = extractAnchorTerms(question);
+  const primaryTopicTerms = extractPrimaryTopicTerms(question);
   let score = 0;
 
   if (queryCompact && titleCompact === queryCompact) {
@@ -2078,6 +2047,14 @@ function scoreDocument(document: SearchDocument, question: string, searchTerms: 
     score += 220;
   }
 
+  if (primaryTopicTerms.length > 0) {
+    if (documentMatchesAnyTerm(document, primaryTopicTerms)) {
+      score += 240;
+    } else {
+      score -= 260;
+    }
+  }
+
   if (query && text.includes(query)) {
     score += 70;
   }
@@ -2094,19 +2071,19 @@ function scoreDocument(document: SearchDocument, question: string, searchTerms: 
     }
 
     if (titleCompact.includes(anchorCompact) || questionFieldCompact.includes(anchorCompact)) {
-      score += 180;
+      score += 130;
     } else if (
       keywordFieldCompact.includes(anchorCompact) ||
       programFieldCompact.includes(anchorCompact) ||
       categoryFieldCompact.includes(anchorCompact)
     ) {
-      score += 110;
+      score += 90;
     } else if (answerFieldCompact.includes(anchorCompact)) {
-      score += 70;
+      score += 55;
     } else if (textCompact.includes(anchorCompact)) {
-      score += 35;
+      score += 25;
     } else {
-      score -= 120;
+      score -= 55;
     }
   }
 
@@ -2145,31 +2122,15 @@ function scoreDocument(document: SearchDocument, question: string, searchTerms: 
     score += Math.min(textCount * 5, 28);
   }
 
-  if (document.sourceType === "database") {
-    score += 30;
-  }
-
-  if (document.sourceType === "rootPage") {
-    score += 4;
-  }
-
-  if (document.sourceType === "search") {
-    score -= 25;
-  }
-
   if (document.answerText && document.answerText.trim().length >= 8) {
-    score += 18;
-  }
-
-  if (document.sourceType === "search" && score < 0) {
-    score = 0;
+    score += 12;
   }
 
   if (document.lastEditedTime) {
     score += 1;
   }
 
-  return score;
+  return Math.max(score, 0);
 }
 
 function selectFinalDocuments(documents: SearchDocument[], question: string): SearchDocument[] {
@@ -2177,28 +2138,21 @@ function selectFinalDocuments(documents: SearchDocument[], question: string): Se
     return [];
   }
 
-  const anchorTerms = extractAnchorTerms(question);
-  const anchorMatchingDocs =
-    anchorTerms.length > 0
-      ? documents.filter((doc) => documentMatchesAllAnchors(doc, anchorTerms))
+  const primaryTopicTerms = extractPrimaryTopicTerms(question);
+  const primaryMatchingDocs =
+    primaryTopicTerms.length > 0
+      ? documents.filter((doc) => documentMatchesAnyTerm(doc, primaryTopicTerms))
       : [];
 
-  const baseDocuments = anchorMatchingDocs.length > 0 ? anchorMatchingDocs : documents;
+  const baseDocuments = primaryMatchingDocs.length > 0 ? primaryMatchingDocs : documents;
   const topScore = baseDocuments[0].score;
-  const hasConfidentDatabaseHit = baseDocuments.some(
-    (doc) => doc.sourceType === "database" && doc.score >= MIN_CONFIDENT_SCORE
-  );
 
   const selected = baseDocuments.filter((doc) => {
     if (doc.score < MIN_CONFIDENT_SCORE) {
       return false;
     }
 
-    if (hasConfidentDatabaseHit && doc.sourceType === "search") {
-      return doc.score >= MIN_SEARCH_API_SCORE_WHEN_DATABASE_HIT_EXISTS;
-    }
-
-    return doc.score >= Math.max(MIN_CONFIDENT_SCORE, Math.floor(topScore * 0.24));
+    return doc.score >= Math.max(MIN_CONFIDENT_SCORE, Math.floor(topScore * 0.25));
   });
 
   if (selected.length > 0) {
@@ -2208,7 +2162,7 @@ function selectFinalDocuments(documents: SearchDocument[], question: string): Se
   return baseDocuments.slice(0, Math.min(3, MAX_SELECTED_DOCS));
 }
 
-function documentMatchesAllAnchors(document: SearchDocument, anchors: string[]): boolean {
+function documentMatchesAnyTerm(document: SearchDocument, terms: string[]): boolean {
   const target = normalizeCompactText(
     [
       document.title,
@@ -2221,30 +2175,12 @@ function documentMatchesAllAnchors(document: SearchDocument, anchors: string[]):
     ].join("\n")
   );
 
-  return anchors.every((anchor) => target.includes(normalizeCompactText(anchor)));
+  return terms.some((term) => target.includes(normalizeCompactText(term)));
 }
 
 function sortDocumentsByRelevance(a: SearchDocument, b: SearchDocument): number {
   if (b.score !== a.score) {
     return b.score - a.score;
-  }
-
-  if (a.sourceType !== b.sourceType) {
-    if (a.sourceType === "database") {
-      return -1;
-    }
-
-    if (b.sourceType === "database") {
-      return 1;
-    }
-
-    if (a.sourceType === "search") {
-      return 1;
-    }
-
-    if (b.sourceType === "search") {
-      return -1;
-    }
   }
 
   return b.text.length - a.text.length;
@@ -2259,10 +2195,8 @@ function createMatchReason(
   const queryCompact = normalizeCompactText(question);
   const titleCompact = normalizeCompactText(document.title);
   const questionCompact = normalizeCompactText(document.questionText);
+  const primaryTopicTerms = extractPrimaryTopicTerms(question);
   const anchors = extractAnchorTerms(question);
-  const matchedAnchors = anchors.filter((anchor) =>
-    normalizeCompactText(document.text).includes(normalizeCompactText(anchor))
-  );
 
   if (queryCompact && titleCompact === queryCompact) {
     reasons.push("タイトル完全一致");
@@ -2274,6 +2208,12 @@ function createMatchReason(
     reasons.push("Question欄に質問文を含む");
   }
 
+  const matchedPrimaryTerms = primaryTopicTerms.filter((term) => documentMatchesAnyTerm(document, [term]));
+  if (matchedPrimaryTerms.length > 0) {
+    reasons.push(`主題語一致: ${matchedPrimaryTerms.join(", ")}`);
+  }
+
+  const matchedAnchors = anchors.filter((anchor) => documentMatchesAnyTerm(document, [anchor]));
   if (matchedAnchors.length > 0) {
     reasons.push(`固有語一致: ${matchedAnchors.join(", ")}`);
   }
@@ -2298,7 +2238,7 @@ function createMatchReason(
     reasons.push(`一致語: ${matchedTerms.join(", ")}`);
   }
 
-  reasons.push(`参照元: ${document.sourceName}`);
+  reasons.push("参照元: Main Manual Database");
 
   return reasons.join(" / ");
 }
@@ -2418,7 +2358,7 @@ function dedupeNotionPages(pages: NotionPage[]): NotionPage[] {
 }
 
 function createPreview(text: string): string {
-  return text.replace(/\s+/g, " ").trim().slice(0, 340);
+  return text.replace(/\s+/g, " ").trim().slice(0, 360);
 }
 
 async function notionFetch<T>(
