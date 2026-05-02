@@ -50,6 +50,12 @@ type NotionListResponse = {
   has_more?: boolean;
 };
 
+type NotionDatabase = {
+  id: string;
+  object?: string;
+  properties?: Record<string, Record<string, any>>;
+};
+
 type SearchDebugPage = {
   title: string;
   score: number;
@@ -58,6 +64,7 @@ type SearchDebugPage = {
   contentPreview: string;
   sourceName?: string;
   sourceType?: string;
+  matchReason?: string;
 };
 
 type SearchDebug = {
@@ -117,23 +124,91 @@ type SearchDocument = {
   text: string;
   propertyText: string;
   blockText: string;
+  questionText: string;
+  answerText: string;
+  keywordText: string;
+  categoryText: string;
+  programText: string;
+  statusText: string;
   score: number;
   lastEditedTime: string;
 };
 
 const NOTION_VERSION = "2022-06-28";
 
-const MAX_DATABASE_PAGES_PER_DB = 12;
-const MAX_SEARCH_PAGES = 12;
+const MAX_DATABASE_RECENT_PAGES_PER_DB = 12;
+const MAX_DATABASE_TARGETED_PAGES_PER_DB = 24;
+const MAX_DATABASE_PAGES_PER_DB = 36;
+const MAX_SEARCH_PAGES = 8;
 const MAX_ROOT_PAGES = 2;
 const MAX_SELECTED_DOCS = 6;
+const MAX_SEEDS_TO_ENRICH = 8;
 const MAX_BLOCKS_PER_PAGE = 45;
 const MAX_CHILD_BLOCKS_PER_PARENT = 12;
-const MAX_CONTEXT_CHARS_PER_DOC = 1600;
-const MAX_OUTPUT_TOKENS = 1600;
+const MAX_CONTEXT_CHARS_PER_DOC = 1700;
+const MAX_OUTPUT_TOKENS = 1700;
+
+const MIN_CONFIDENT_SCORE = 45;
+const MIN_SEARCH_API_SCORE_WHEN_DATABASE_HIT_EXISTS = 80;
 
 const NOTION_TIMEOUT_MS = 7000;
 const OPENAI_TIMEOUT_MS = 18000;
+
+const QUESTION_PROPERTY_NAMES = [
+  "Question",
+  "質問",
+  "Q",
+  "Title",
+  "title",
+  "Name",
+  "name",
+  "名前",
+  "件名",
+];
+
+const ANSWER_PROPERTY_NAMES = [
+  "Answer",
+  "回答",
+  "A",
+  "本文",
+  "内容",
+  "説明",
+  "Description",
+  "WebDisplay",
+  "Memo",
+  "メモ",
+];
+
+const KEYWORD_PROPERTY_NAMES = [
+  "Keyword",
+  "Keywords",
+  "キーワード",
+  "タグ",
+  "Tag",
+  "Tags",
+];
+
+const CATEGORY_PROPERTY_NAMES = [
+  "Category",
+  "カテゴリ",
+  "カテゴリー",
+  "分類",
+  "種別",
+];
+
+const PROGRAM_PROPERTY_NAMES = [
+  "Program",
+  "プログラム",
+  "ProgramName",
+  "Program Name",
+  "対象プログラム",
+];
+
+const STATUS_PROPERTY_NAMES = [
+  "Status",
+  "ステータス",
+  "状態",
+];
 
 const DEFAULT_MANAGER_GATE: ManagerGate = {
   canProceedAlone: [
@@ -348,7 +423,7 @@ async function searchKnowledge(question: string): Promise<{
     }
 
     try {
-      const pages = await queryDatabasePages(source.id);
+      const pages = await queryDatabasePages(source.id, question, searchTerms);
       debug.databasePageCount += pages.length;
       debug.sourceCounts[source.name] = pages.length;
 
@@ -405,9 +480,9 @@ async function searchKnowledge(question: string): Promise<{
       ...doc,
       score: scoreDocument(doc, question, searchTerms),
     }))
-    .sort((a, b) => b.score - a.score);
+    .sort(sortDocumentsByRelevance);
 
-  const topSeeds = dedupedSeeds.slice(0, MAX_SELECTED_DOCS);
+  const topSeeds = dedupedSeeds.slice(0, MAX_SEEDS_TO_ENRICH);
 
   const enrichedDocuments = await Promise.all(
     topSeeds.map(async (doc) => {
@@ -430,13 +505,14 @@ async function searchKnowledge(question: string): Promise<{
     })
   );
 
-  const finalDocuments = enrichedDocuments
+  const rankedDocuments = enrichedDocuments
     .map((doc) => ({
       ...doc,
       score: scoreDocument(doc, question, searchTerms),
     }))
-    .sort((a, b) => b.score - a.score)
-    .slice(0, MAX_SELECTED_DOCS);
+    .sort(sortDocumentsByRelevance);
+
+  const finalDocuments = selectFinalDocuments(rankedDocuments);
 
   debug.discoveredPageCount = dedupedSeeds.length;
   debug.selectedPageCount = finalDocuments.length;
@@ -450,6 +526,7 @@ async function searchKnowledge(question: string): Promise<{
     contentPreview: createPreview(doc.text),
     sourceName: doc.sourceName,
     sourceType: doc.sourceType,
+    matchReason: createMatchReason(doc, question, searchTerms),
   }));
 
   return {
@@ -474,12 +551,25 @@ function createEmptyDebug(question: string): SearchDebug {
   };
 }
 
-async function queryDatabasePages(databaseId: string): Promise<NotionPage[]> {
+async function queryDatabasePages(
+  databaseId: string,
+  question: string,
+  searchTerms: string[]
+): Promise<NotionPage[]> {
+  const recentTask = queryDatabaseRecentPages(databaseId);
+  const targetedTask = queryDatabaseTargetedPages(databaseId, question, searchTerms);
+
+  const [recentPages, targetedPages] = await Promise.all([recentTask, targetedTask]);
+
+  return dedupeNotionPages([...targetedPages, ...recentPages]).slice(0, MAX_DATABASE_PAGES_PER_DB);
+}
+
+async function queryDatabaseRecentPages(databaseId: string): Promise<NotionPage[]> {
   const response = await notionFetch<NotionListResponse>(
     `/databases/${cleanNotionId(databaseId)}/query`,
     "POST",
     {
-      page_size: MAX_DATABASE_PAGES_PER_DB,
+      page_size: MAX_DATABASE_RECENT_PAGES_PER_DB,
       sorts: [
         {
           timestamp: "last_edited_time",
@@ -490,7 +580,233 @@ async function queryDatabasePages(databaseId: string): Promise<NotionPage[]> {
   );
 
   const results = Array.isArray(response.results) ? response.results : [];
-  return results.filter(isNotionPage).slice(0, MAX_DATABASE_PAGES_PER_DB);
+  return results.filter(isNotionPage).slice(0, MAX_DATABASE_RECENT_PAGES_PER_DB);
+}
+
+async function queryDatabaseTargetedPages(
+  databaseId: string,
+  question: string,
+  searchTerms: string[]
+): Promise<NotionPage[]> {
+  try {
+    const database = await getDatabase(databaseId);
+    const filter = buildDatabaseSearchFilter(database.properties || {}, question, searchTerms);
+
+    if (!filter) {
+      return [];
+    }
+
+    const response = await notionFetch<NotionListResponse>(
+      `/databases/${cleanNotionId(databaseId)}/query`,
+      "POST",
+      {
+        page_size: MAX_DATABASE_TARGETED_PAGES_PER_DB,
+        filter,
+        sorts: [
+          {
+            timestamp: "last_edited_time",
+            direction: "descending",
+          },
+        ],
+      }
+    );
+
+    const results = Array.isArray(response.results) ? response.results : [];
+    return results.filter(isNotionPage).slice(0, MAX_DATABASE_TARGETED_PAGES_PER_DB);
+  } catch {
+    return [];
+  }
+}
+
+async function getDatabase(databaseId: string): Promise<NotionDatabase> {
+  return await notionFetch<NotionDatabase>(`/databases/${cleanNotionId(databaseId)}`, "GET");
+}
+
+function buildDatabaseSearchFilter(
+  properties: Record<string, Record<string, any>>,
+  question: string,
+  searchTerms: string[]
+): Record<string, any> | null {
+  const searchableProperties = Object.entries(properties)
+    .filter(([, schema]) => isSearchableDatabaseProperty(schema?.type))
+    .sort(([aName, aSchema], [bName, bSchema]) => {
+      const aScore = getPropertySearchPriority(aName, aSchema?.type);
+      const bScore = getPropertySearchPriority(bName, bSchema?.type);
+      return bScore - aScore;
+    })
+    .slice(0, 10);
+
+  if (searchableProperties.length === 0) {
+    return null;
+  }
+
+  const terms = createDatabaseFilterTerms(question, searchTerms);
+  const filters: Record<string, any>[] = [];
+
+  for (const [propertyName, schema] of searchableProperties) {
+    for (const term of terms) {
+      const filter = createNotionPropertyFilter(propertyName, schema?.type, term);
+      if (filter) {
+        filters.push(filter);
+      }
+    }
+  }
+
+  if (filters.length === 0) {
+    return null;
+  }
+
+  if (filters.length === 1) {
+    return filters[0];
+  }
+
+  return {
+    or: filters.slice(0, 80),
+  };
+}
+
+function isSearchableDatabaseProperty(type: string | undefined): boolean {
+  return [
+    "title",
+    "rich_text",
+    "url",
+    "email",
+    "phone_number",
+    "select",
+    "multi_select",
+    "status",
+  ].includes(type || "");
+}
+
+function getPropertySearchPriority(name: string, type: string | undefined): number {
+  const normalizedName = normalizePropertyName(name);
+
+  if (type === "title") {
+    return 100;
+  }
+
+  if (QUESTION_PROPERTY_NAMES.some((item) => normalizePropertyName(item) === normalizedName)) {
+    return 95;
+  }
+
+  if (ANSWER_PROPERTY_NAMES.some((item) => normalizePropertyName(item) === normalizedName)) {
+    return 80;
+  }
+
+  if (KEYWORD_PROPERTY_NAMES.some((item) => normalizePropertyName(item) === normalizedName)) {
+    return 70;
+  }
+
+  if (CATEGORY_PROPERTY_NAMES.some((item) => normalizePropertyName(item) === normalizedName)) {
+    return 55;
+  }
+
+  if (PROGRAM_PROPERTY_NAMES.some((item) => normalizePropertyName(item) === normalizedName)) {
+    return 55;
+  }
+
+  return 20;
+}
+
+function createNotionPropertyFilter(
+  propertyName: string,
+  type: string | undefined,
+  term: string
+): Record<string, any> | null {
+  if (!term) {
+    return null;
+  }
+
+  if (type === "title") {
+    return {
+      property: propertyName,
+      title: {
+        contains: term,
+      },
+    };
+  }
+
+  if (type === "rich_text") {
+    return {
+      property: propertyName,
+      rich_text: {
+        contains: term,
+      },
+    };
+  }
+
+  if (type === "url") {
+    return {
+      property: propertyName,
+      url: {
+        contains: term,
+      },
+    };
+  }
+
+  if (type === "email") {
+    return {
+      property: propertyName,
+      email: {
+        contains: term,
+      },
+    };
+  }
+
+  if (type === "phone_number") {
+    return {
+      property: propertyName,
+      phone_number: {
+        contains: term,
+      },
+    };
+  }
+
+  if (type === "select") {
+    return {
+      property: propertyName,
+      select: {
+        equals: term,
+      },
+    };
+  }
+
+  if (type === "multi_select") {
+    return {
+      property: propertyName,
+      multi_select: {
+        contains: term,
+      },
+    };
+  }
+
+  if (type === "status") {
+    return {
+      property: propertyName,
+      status: {
+        equals: term,
+      },
+    };
+  }
+
+  return null;
+}
+
+function createDatabaseFilterTerms(question: string, searchTerms: string[]): string[] {
+  const candidates = [
+    question,
+    stripQuestionSuffix(question),
+    ...searchTerms,
+  ];
+
+  return Array.from(
+    new Set(
+      candidates
+        .map((item) => item.trim())
+        .filter((item) => item.length >= 2)
+        .filter((item) => !isWeakSearchTerm(item))
+    )
+  ).slice(0, 8);
 }
 
 async function searchNotionPages(question: string): Promise<NotionPage[]> {
@@ -563,9 +879,29 @@ function pageToDocument(
   question: string,
   searchTerms: string[]
 ): SearchDocument {
+  const properties = page.properties || {};
   const title = getPageTitle(page);
-  const propertyText = getPropertyText(page.properties || {});
-  const text = [title, propertyText].filter(Boolean).join("\n");
+  const propertyText = getPropertyText(properties);
+
+  const questionText = getPropertyTextByNames(properties, QUESTION_PROPERTY_NAMES) || title;
+  const answerText = getPropertyTextByNames(properties, ANSWER_PROPERTY_NAMES);
+  const keywordText = getPropertyTextByNames(properties, KEYWORD_PROPERTY_NAMES);
+  const categoryText = getPropertyTextByNames(properties, CATEGORY_PROPERTY_NAMES);
+  const programText = getPropertyTextByNames(properties, PROGRAM_PROPERTY_NAMES);
+  const statusText = getPropertyTextByNames(properties, STATUS_PROPERTY_NAMES);
+
+  const text = [
+    title,
+    questionText ? `Question: ${questionText}` : "",
+    answerText ? `Answer: ${answerText}` : "",
+    keywordText ? `Keyword: ${keywordText}` : "",
+    categoryText ? `Category: ${categoryText}` : "",
+    programText ? `Program: ${programText}` : "",
+    statusText ? `Status: ${statusText}` : "",
+    propertyText,
+  ]
+    .filter(Boolean)
+    .join("\n");
 
   const doc: SearchDocument = {
     id: page.id,
@@ -576,6 +912,12 @@ function pageToDocument(
     text,
     propertyText,
     blockText: "",
+    questionText,
+    answerText,
+    keywordText,
+    categoryText,
+    programText,
+    statusText,
     score: 0,
     lastEditedTime: page.last_edited_time || page.created_time || "",
   };
@@ -587,33 +929,17 @@ function pageToDocument(
 function getPageTitle(page: NotionPage): string {
   const properties = page.properties || {};
 
+  const titleByQuestion = getPropertyTextByNames(properties, QUESTION_PROPERTY_NAMES);
+  if (titleByQuestion) {
+    return titleByQuestion;
+  }
+
   for (const property of Object.values(properties)) {
     if (property && property.type === "title") {
       const title = richTextToPlain(property.title);
       if (title) {
         return title;
       }
-    }
-  }
-
-  const candidates = [
-    properties.Name,
-    properties.name,
-    properties.名前,
-    properties.Title,
-    properties.title,
-    properties.Page,
-    properties.page,
-  ];
-
-  for (const candidate of candidates) {
-    const title =
-      richTextToPlain(candidate?.title) ||
-      richTextToPlain(candidate?.rich_text) ||
-      String(candidate?.plain_text || "").trim();
-
-    if (title) {
-      return title;
     }
   }
 
@@ -632,6 +958,24 @@ function getPropertyText(properties: Record<string, NotionProperty>): string {
   }
 
   return lines.join("\n");
+}
+
+function getPropertyTextByNames(
+  properties: Record<string, NotionProperty>,
+  names: string[]
+): string {
+  const wanted = names.map(normalizePropertyName);
+
+  for (const [key, property] of Object.entries(properties)) {
+    if (wanted.includes(normalizePropertyName(key))) {
+      const value = getPropertyValueText(property);
+      if (value) {
+        return value;
+      }
+    }
+  }
+
+  return "";
 }
 
 function getPropertyValueText(property: NotionProperty | undefined): string {
@@ -849,6 +1193,17 @@ async function buildAnswer(
     });
   }
 
+  const topScore = documents[0]?.score || 0;
+
+  if (topScore < MIN_CONFIDENT_SCORE) {
+    return createFallbackPayload({
+      question,
+      documents,
+      debug,
+      note: `関連候補のスコアが低いため、断定回答を避けています。最高スコアは ${topScore} です。Notionの該当ページ名、Question欄、Keyword欄を確認してください。`,
+    });
+  }
+
   const context = buildContextForAi(documents);
   const schema = buildAnswerJsonSchema();
 
@@ -856,6 +1211,9 @@ async function buildAnswer(
     "あなたはRSJP業務マニュアルAIです。",
     "目的は、新人職員が迷わず進め、危ない判断では課長確認で止まれるようにすることです。",
     "Notionの参照情報に基づいて、日本語で実務的に回答してください。",
+    "Reference 1 は最も重要な参照元です。まずReference 1を優先してください。",
+    "Question欄とAnswer欄に明記されている内容を最優先してください。",
+    "Notion Search APIの結果とManual Databaseの結果が矛盾する場合は、Manual Databaseを優先してください。",
     "Notionで確認できたことと、確認できなかったことを分けてください。",
     "費用、見積、請求、契約、支払、受入可否、例外対応、先方への確約、個人情報、アレルギー、医療情報は課長確認が必要です。",
     "根拠が弱い場合は、断定せず、課長確認またはNotion確認を促してください。",
@@ -871,6 +1229,8 @@ async function buildAnswer(
     "",
     "出力条件:",
     "- answer は、初心者向けに読みやすい本文にする。",
+    "- Notionに明記されているAnswer欄の内容は、勝手に省略・否定しない。",
+    "- 参照元がQuestion/Answer形式の場合は、そのAnswerを中心に回答する。",
     "- steps は、新人が順番に進められる手順にする。",
     "- checklist は、作業前後の確認項目にする。",
     "- managerGate は、課長確認が必要な判断を明確にする。",
@@ -968,9 +1328,16 @@ function buildContextForAi(documents: SearchDocument[]): string {
         `URL: ${document.url || "N/A"}`,
         `Last edited: ${document.lastEditedTime || "N/A"}`,
         `Score: ${document.score}`,
+        document.questionText ? `Question field: ${document.questionText}` : "",
+        document.answerText ? `Answer field: ${document.answerText}` : "",
+        document.keywordText ? `Keyword field: ${document.keywordText}` : "",
+        document.categoryText ? `Category field: ${document.categoryText}` : "",
+        document.programText ? `Program field: ${document.programText}` : "",
         "Content:",
         excerpt,
-      ].join("\n");
+      ]
+        .filter(Boolean)
+        .join("\n");
     })
     .join("\n\n");
 }
@@ -1253,8 +1620,20 @@ function createSearchTerms(question: string): string[] {
   for (const term of normalized.split(" ")) {
     const trimmed = term.trim();
 
-    if (trimmed.length >= 2) {
+    if (trimmed.length >= 2 && !isWeakSearchTerm(trimmed)) {
       terms.add(trimmed);
+    }
+  }
+
+  const stripped = stripQuestionSuffix(question);
+  if (stripped && stripped.length >= 2) {
+    terms.add(stripped);
+  }
+
+  const asciiMatches = question.match(/[A-Za-z0-9][A-Za-z0-9_-]*/g) || [];
+  for (const match of asciiMatches) {
+    if (match.length >= 2) {
+      terms.add(match);
     }
   }
 
@@ -1262,6 +1641,7 @@ function createSearchTerms(question: string): string[] {
     "見積",
     "請求",
     "支払",
+    "支払い",
     "契約",
     "合意書",
     "バス",
@@ -1287,15 +1667,109 @@ function createSearchTerms(question: string): string[] {
     "JMU",
     "UCD",
     "FIU",
+    "OIC",
+    "BKC",
+    "衣笠",
+    "朱雀",
+    "通学",
+    "通学方法",
+    "通勤",
+    "シャトル",
+    "キャンパス",
+    "修了式",
+    "帰国",
+    "空港",
+    "関空",
+    "伊丹",
+    "JR",
+    "阪急",
+    "バス",
+    "電車",
+    "タクシー",
+    "チップ",
+    "歯医者",
+    "病院",
+    "天気",
+    "スマホ",
+    "SIM",
+    "WiFi",
   ];
 
   for (const term of importantTerms) {
-    if (question.includes(term)) {
+    if (question.toLowerCase().includes(term.toLowerCase())) {
       terms.add(term);
     }
   }
 
-  return Array.from(terms).slice(0, 25);
+  const japaneseUsefulTerms = extractUsefulJapaneseTerms(question);
+  for (const term of japaneseUsefulTerms) {
+    if (term.length >= 2 && !isWeakSearchTerm(term)) {
+      terms.add(term);
+    }
+  }
+
+  return Array.from(terms).slice(0, 30);
+}
+
+function extractUsefulJapaneseTerms(question: string): string[] {
+  const terms: string[] = [];
+  const compact = question.replace(/\s+/g, "");
+
+  const candidates = [
+    compact.replace(/について.*$/g, ""),
+    compact.replace(/を教えてください.*$/g, ""),
+    compact.replace(/を教えて.*$/g, ""),
+    compact.replace(/してください.*$/g, ""),
+    compact.replace(/ですか.*$/g, ""),
+  ];
+
+  for (const candidate of candidates) {
+    if (candidate && candidate.length >= 2 && candidate !== compact) {
+      terms.push(candidate);
+    }
+  }
+
+  const commonWords = [
+    "通学方法",
+    "通学",
+    "修了式",
+    "帰国",
+    "空港",
+    "歯医者",
+    "スマホ",
+    "チップ",
+    "天気",
+    "持ち物",
+    "キャンパス",
+    "バス",
+    "電車",
+    "請求方法",
+    "見積もり",
+    "申込方法",
+    "参加資格",
+  ];
+
+  for (const word of commonWords) {
+    if (compact.includes(word)) {
+      terms.push(word);
+    }
+  }
+
+  return terms;
+}
+
+function stripQuestionSuffix(value: string): string {
+  return value
+    .trim()
+    .replace(/[？?。.!！]+$/g, "")
+    .replace(/について教えてください$/g, "")
+    .replace(/について教えて$/g, "")
+    .replace(/を教えてください$/g, "")
+    .replace(/を教えて$/g, "")
+    .replace(/教えてください$/g, "")
+    .replace(/教えて$/g, "")
+    .replace(/してください$/g, "")
+    .trim();
 }
 
 function createSearchQueries(question: string, terms: string[]): string[] {
@@ -1309,36 +1783,94 @@ function createSearchQueries(question: string, terms: string[]): string[] {
 }
 
 function scoreDocument(document: SearchDocument, question: string, searchTerms: string[]): number {
-  const title = normalizeText(document.title);
-  const text = normalizeText(document.text);
   const query = normalizeText(question);
+  const queryCompact = normalizeCompactText(question);
+  const title = normalizeText(document.title);
+  const titleCompact = normalizeCompactText(document.title);
+  const questionField = normalizeText(document.questionText);
+  const questionFieldCompact = normalizeCompactText(document.questionText);
+  const answerField = normalizeText(document.answerText);
+  const keywordField = normalizeText(document.keywordText);
+  const categoryField = normalizeText(document.categoryText);
+  const programField = normalizeText(document.programText);
+  const text = normalizeText(document.text);
   let score = 0;
 
-  if (query && title.includes(query)) {
-    score += 90;
+  if (queryCompact && titleCompact === queryCompact) {
+    score += 360;
+  } else if (queryCompact && questionFieldCompact === queryCompact) {
+    score += 360;
+  } else if (queryCompact && titleCompact.includes(queryCompact)) {
+    score += 260;
+  } else if (queryCompact && questionFieldCompact.includes(queryCompact)) {
+    score += 260;
+  } else if (queryCompact && queryCompact.includes(titleCompact) && titleCompact.length >= 4) {
+    score += 190;
+  } else if (
+    queryCompact &&
+    queryCompact.includes(questionFieldCompact) &&
+    questionFieldCompact.length >= 4
+  ) {
+    score += 190;
   }
 
   if (query && text.includes(query)) {
-    score += 50;
+    score += 70;
+  }
+
+  if (query && answerField.includes(query)) {
+    score += 80;
   }
 
   for (const term of searchTerms) {
     const normalizedTerm = normalizeText(term);
+    const compactTerm = normalizeCompactText(term);
 
-    if (!normalizedTerm) {
+    if (!normalizedTerm || !compactTerm || isWeakSearchTerm(normalizedTerm)) {
       continue;
     }
 
-    if (title.includes(normalizedTerm)) {
-      score += 24;
+    if (titleCompact.includes(compactTerm)) {
+      score += 52;
     }
 
-    const count = countOccurrences(text, normalizedTerm);
-    score += Math.min(count * 6, 36);
+    if (questionFieldCompact.includes(compactTerm)) {
+      score += 60;
+    }
+
+    if (keywordField.includes(normalizedTerm)) {
+      score += 38;
+    }
+
+    if (categoryField.includes(normalizedTerm)) {
+      score += 26;
+    }
+
+    if (programField.includes(normalizedTerm)) {
+      score += 26;
+    }
+
+    const answerCount = countOccurrences(answerField, normalizedTerm);
+    score += Math.min(answerCount * 12, 48);
+
+    const textCount = countOccurrences(text, normalizedTerm);
+    score += Math.min(textCount * 6, 30);
+  }
+
+  if (document.sourceType === "database") {
+    score += 24;
+  }
+
+  if (document.sourceType === "rootPage") {
+    score += 4;
   }
 
   if (document.sourceType === "search") {
-    score += 8;
+    score -= 12;
+  }
+
+  if (document.sourceType === "search" && score < 0) {
+    score = 0;
   }
 
   if (document.lastEditedTime) {
@@ -1348,8 +1880,116 @@ function scoreDocument(document: SearchDocument, question: string, searchTerms: 
   return score;
 }
 
+function selectFinalDocuments(documents: SearchDocument[]): SearchDocument[] {
+  if (documents.length === 0) {
+    return [];
+  }
+
+  const topScore = documents[0].score;
+  const hasConfidentDatabaseHit = documents.some(
+    (doc) => doc.sourceType === "database" && doc.score >= MIN_CONFIDENT_SCORE
+  );
+
+  const selected = documents.filter((doc) => {
+    if (doc.score < MIN_CONFIDENT_SCORE) {
+      return false;
+    }
+
+    if (hasConfidentDatabaseHit && doc.sourceType === "search") {
+      return doc.score >= MIN_SEARCH_API_SCORE_WHEN_DATABASE_HIT_EXISTS;
+    }
+
+    return doc.score >= Math.max(MIN_CONFIDENT_SCORE, Math.floor(topScore * 0.3));
+  });
+
+  if (selected.length > 0) {
+    return selected.slice(0, MAX_SELECTED_DOCS);
+  }
+
+  return documents.slice(0, Math.min(3, MAX_SELECTED_DOCS));
+}
+
+function sortDocumentsByRelevance(a: SearchDocument, b: SearchDocument): number {
+  if (b.score !== a.score) {
+    return b.score - a.score;
+  }
+
+  if (a.sourceType !== b.sourceType) {
+    if (a.sourceType === "database") {
+      return -1;
+    }
+
+    if (b.sourceType === "database") {
+      return 1;
+    }
+
+    if (a.sourceType === "search") {
+      return 1;
+    }
+
+    if (b.sourceType === "search") {
+      return -1;
+    }
+  }
+
+  return b.text.length - a.text.length;
+}
+
+function createMatchReason(
+  document: SearchDocument,
+  question: string,
+  searchTerms: string[]
+): string {
+  const reasons: string[] = [];
+  const queryCompact = normalizeCompactText(question);
+  const titleCompact = normalizeCompactText(document.title);
+  const questionCompact = normalizeCompactText(document.questionText);
+
+  if (queryCompact && titleCompact === queryCompact) {
+    reasons.push("タイトル完全一致");
+  } else if (queryCompact && questionCompact === queryCompact) {
+    reasons.push("Question欄完全一致");
+  } else if (queryCompact && titleCompact.includes(queryCompact)) {
+    reasons.push("タイトルに質問文を含む");
+  } else if (queryCompact && questionCompact.includes(queryCompact)) {
+    reasons.push("Question欄に質問文を含む");
+  }
+
+  const matchedTerms = searchTerms
+    .filter((term) => {
+      const compactTerm = normalizeCompactText(term);
+      if (!compactTerm || isWeakSearchTerm(term)) {
+        return false;
+      }
+
+      return (
+        normalizeCompactText(document.title).includes(compactTerm) ||
+        normalizeCompactText(document.questionText).includes(compactTerm) ||
+        normalizeCompactText(document.answerText).includes(compactTerm) ||
+        normalizeCompactText(document.keywordText).includes(compactTerm)
+      );
+    })
+    .slice(0, 5);
+
+  if (matchedTerms.length > 0) {
+    reasons.push(`一致語: ${matchedTerms.join(", ")}`);
+  }
+
+  reasons.push(`参照元: ${document.sourceName}`);
+
+  return reasons.join(" / ");
+}
+
 function normalizeText(value: string): string {
   return value.toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+function normalizeCompactText(value: string): string {
+  return normalizeText(value).replace(/\s+/g, "");
+}
+
+function normalizePropertyName(value: string): string {
+  return value.toLowerCase().replace(/[\s_\-・/\\|()[\]{}「」『』【】,:;'"`~!?！？。、，．]+/g, "");
 }
 
 function normalizeString(value: unknown, fallback = ""): string {
@@ -1363,6 +2003,40 @@ function normalizeStringArray(value: unknown, fallback: string[]): string[] {
 
   const items = value.map((item) => String(item || "").trim()).filter(Boolean);
   return items.length > 0 ? items : fallback;
+}
+
+function isWeakSearchTerm(value: string): boolean {
+  const normalized = normalizeCompactText(value);
+
+  if (!normalized) {
+    return true;
+  }
+
+  const weakTerms = new Set([
+    "教えて",
+    "教えてください",
+    "ください",
+    "について",
+    "方法",
+    "手順",
+    "確認",
+    "対応",
+    "する",
+    "したい",
+    "できますか",
+    "ですか",
+    "ますか",
+    "場合",
+    "必要",
+    "もの",
+    "こと",
+    "どの",
+    "どう",
+    "なに",
+    "何",
+  ]);
+
+  return weakTerms.has(normalized);
 }
 
 function countOccurrences(text: string, term: string): number {
@@ -1408,8 +2082,20 @@ function dedupeDocuments(documents: SearchDocument[]): SearchDocument[] {
   return Array.from(map.values());
 }
 
+function dedupeNotionPages(pages: NotionPage[]): NotionPage[] {
+  const map = new Map<string, NotionPage>();
+
+  for (const page of pages) {
+    if (!map.has(page.id)) {
+      map.set(page.id, page);
+    }
+  }
+
+  return Array.from(map.values());
+}
+
 function createPreview(text: string): string {
-  return text.replace(/\s+/g, " ").trim().slice(0, 260);
+  return text.replace(/\s+/g, " ").trim().slice(0, 300);
 }
 
 async function notionFetch<T>(
