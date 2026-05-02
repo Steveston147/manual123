@@ -2193,3 +2193,94 @@ body {
     text-align: center !important;
   }
 }
+* =========================================================
+   Safe loading animation reinforcement
+   既存CSSを壊さず、検索中アニメーションだけを安定させる追記
+========================================================= */
+
+.loading-card {
+  position: relative;
+  overflow: hidden;
+}
+
+.loading-card::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 18% 20%, rgba(96, 165, 250, 0.12), transparent 28%),
+    radial-gradient(circle at 82% 24%, rgba(129, 140, 248, 0.1), transparent 30%);
+}
+
+.loading-header {
+  position: relative;
+  z-index: 1;
+  align-items: center;
+}
+
+.loading-spinner,
+.mini-spinner {
+  flex: 0 0 auto;
+  animation: spin 0.85s linear infinite;
+  will-change: transform;
+}
+
+.loading-progress {
+  position: relative;
+  z-index: 1;
+}
+
+.loading-progress span {
+  animation: loadingBar 1.2s ease-in-out infinite;
+  will-change: transform;
+}
+
+.loading-steps {
+  position: relative;
+  z-index: 1;
+}
+
+.side-loading-note,
+.mini-loading-row {
+  min-height: 28px;
+}
+
+.timeline .loading-card,
+.pro-timeline .loading-card {
+  margin-bottom: 12px;
+}
+
+.bubble.assistant .loading-card {
+  margin-top: 0;
+}
+
+/* 質問送信中に左側パネルへ出る小さな表示の安定化 */
+.pro-side-panel .side-loading-note,
+.pro-side-panel .mini-loading-row {
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: rgba(248, 251, 255, 0.82);
+  border: 1px solid #e6edf7;
+}
+
+/* スマホ時に検索中カードが窮屈にならないようにする */
+@media (max-width: 640px) {
+  .loading-card {
+    padding: 15px;
+  }
+
+  .loading-header {
+    gap: 10px;
+  }
+
+  .loading-spinner {
+    width: 22px;
+    height: 22px;
+  }
+
+  .loading-steps {
+    flex-direction: column;
+    gap: 6px;
+  }
+}
