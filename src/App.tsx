@@ -88,6 +88,17 @@ type GenerateImageResponse = {
   createdAt?: string;
 };
 
+type SaveApprovedAnswerResponse = {
+  ok?: boolean;
+  message?: string;
+  error?: string;
+  notionPageId?: string;
+  notionUrl?: string;
+  status?: string;
+  approved?: boolean;
+  savedAt?: string;
+};
+
 const STORAGE_KEYS = {
   messages: "rsjp_manual_messages_v3",
   revisions: "rsjp_manual_revisions_v2",
@@ -98,6 +109,7 @@ const DEFAULT_SETTINGS = {
   qaWebhookUrl: "/api/ask",
   authWebhookUrl: "",
   revisionNotionWebhookUrl: "",
+  approvedAnswerSaveApiUrl: "/api/save-approved-answer",
   notionDatabaseUrl:
     "https://www.notion.so/fe38f692c4874cd291cb51fbb49566fc?v=8e64c3768093465d9b8791fce4c17b10",
   notionRevisionDatabaseId: "",
@@ -563,6 +575,10 @@ function normalizeSettings(value: unknown): Settings {
       value.revisionNotionWebhookUrl,
       DEFAULT_SETTINGS.revisionNotionWebhookUrl
     ),
+    approvedAnswerSaveApiUrl: normalizeString(
+      value.approvedAnswerSaveApiUrl,
+      DEFAULT_SETTINGS.approvedAnswerSaveApiUrl
+    ),
     notionDatabaseUrl: normalizeString(
       value.notionDatabaseUrl,
       DEFAULT_SETTINGS.notionDatabaseUrl
@@ -677,9 +693,7 @@ function makeSlideLabel(value: string, index: number) {
     { keys: ["教員"], label: "教員確認" },
   ];
 
-  const matched = rules.find((rule) =>
-    rule.keys.every((key) => text.includes(key))
-  );
+  const matched = rules.find((rule) => rule.keys.every((key) => text.includes(key)));
 
   if (matched) return matched.label;
 
@@ -1075,6 +1089,15 @@ export default function App() {
   const [imageLoadingIds, setImageLoadingIds] = useState<Record<string, boolean>>({});
   const [imageErrors, setImageErrors] = useState<Record<string, string>>({});
   const [generatedImageUrls, setGeneratedImageUrls] = useState<Record<string, string>>({});
+  const [approvedAnswerSavingIds, setApprovedAnswerSavingIds] = useState<
+    Record<string, boolean>
+  >({});
+  const [approvedAnswerSaveMessages, setApprovedAnswerSaveMessages] = useState<
+    Record<string, string>
+  >({});
+  const [approvedAnswerSaveErrors, setApprovedAnswerSaveErrors] = useState<
+    Record<string, string>
+  >({});
 
   const [messages, setMessages] = useState<ChatMessage[]>(() => loadMessagesFromStorage());
   const [revisions, setRevisions] = useState<RevisionRecord[]>(() => loadRevisionsFromStorage());
@@ -1085,8 +1108,7 @@ export default function App() {
   const [editedAnswer, setEditedAnswer] = useState("");
 
   const latestAssistantMessage = useMemo(
-    () =>
-      messages.find((message) => message.role === "assistant" && message.payload),
+    () => messages.find((message) => message.role === "assistant" && message.payload),
     [messages]
   );
 
@@ -1141,6 +1163,9 @@ export default function App() {
     setImageErrors({});
     setImageLoadingIds({});
     setGeneratedImageUrls({});
+    setApprovedAnswerSavingIds({});
+    setApprovedAnswerSaveMessages({});
+    setApprovedAnswerSaveErrors({});
   }
 
   function loginAsDemoUser() {
@@ -1321,47 +1346,131 @@ export default function App() {
     }
   }
 
-  async function saveRevision(message: ChatMessage) {
+  async function sendApprovedAnswerToNotion(
+    message: ChatMessage,
+    revisedAnswer: string
+  ): Promise<void> {
+    if (!message.payload) return;
+
+    const endpoint = settings.approvedAnswerSaveApiUrl.trim() || "/api/save-approved-answer";
+
+    setApprovedAnswerSaveMessages((current) => ({ ...current, [message.id]: "" }));
+    setApprovedAnswerSaveErrors((current) => ({ ...current, [message.id]: "" }));
+    setApprovedAnswerSavingIds((current) => ({ ...current, [message.id]: true }));
+
+    try {
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: auth ? `Bearer ${auth.token}` : "",
+        },
+        body: JSON.stringify({
+          question: message.question || "",
+          originalAnswer: message.payload.answer,
+          revisedAnswer,
+          note: "担当者が画面上で回答を修正し、承認済み回答DBへ保存しました。",
+          revisedBy: auth?.email || "",
+          approvedBy: auth?.email || "",
+          relatedManual: (message.payload.references || []).join("\n"),
+          status: "Approved",
+          approved: true,
+        }),
+      });
+
+      const data = (await response.json()) as SaveApprovedAnswerResponse;
+
+      if (!response.ok || !data.ok) {
+        throw new Error(data.error || "承認済み回答DBへの保存に失敗しました。");
+      }
+
+      const messageText = data.notionUrl
+        ? `承認済み回答DBへ保存しました。`
+        : data.message || "承認済み回答DBへ保存しました。";
+
+      setApprovedAnswerSaveMessages((current) => ({
+        ...current,
+        [message.id]: messageText,
+      }));
+    } catch (err) {
+      const errorMessage =
+        err instanceof Error
+          ? err.message
+          : "承認済み回答DBへの保存中にエラーが発生しました。";
+
+      setApprovedAnswerSaveErrors((current) => ({
+        ...current,
+        [message.id]: errorMessage,
+      }));
+
+      throw err;
+    } finally {
+      setApprovedAnswerSavingIds((current) => ({ ...current, [message.id]: false }));
+    }
+  }
+
+  async function saveRevision(
+    message: ChatMessage,
+    options?: {
+      saveToApprovedAnswerDb?: boolean;
+    }
+  ) {
     if (!message.payload || !editedAnswer.trim()) return;
+
+    const revisedAnswer = editedAnswer.trim();
 
     const record: RevisionRecord = {
       id: makeId(),
       question: message.question || "",
       originalAnswer: message.payload.answer,
-      revisedAnswer: editedAnswer.trim(),
+      revisedAnswer,
       revisedAt: nowIso(),
-      note: "担当者が画面上で回答を修正しました。",
+      note: options?.saveToApprovedAnswerDb
+        ? "担当者が画面上で回答を修正し、承認済み回答DBへ保存しました。"
+        : "担当者が画面上で回答を修正しました。",
     };
 
-    persistRevisions([record, ...revisions]);
-
-    const updatedMessages = messages.map((item) => {
-      if (item.id !== message.id || !item.payload) return item;
-
-      return {
-        ...item,
-        payload: {
-          ...item.payload,
-          answer: editedAnswer.trim(),
-          oldPolicyNote: `${item.payload.oldPolicyNote || ""}\n\n【担当者修正】${record.note}`,
-        },
-      };
-    });
-
-    persistMessages(updatedMessages);
-    setEditTargetId(null);
-    setEditedAnswer("");
-
-    if (settings.revisionNotionWebhookUrl.trim()) {
-      try {
-        await fetch(settings.revisionNotionWebhookUrl, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(record),
-        });
-      } catch {
-        setError("回答修正は保存しましたが、Notion Revision DBへの送信に失敗しました。");
+    try {
+      if (options?.saveToApprovedAnswerDb) {
+        await sendApprovedAnswerToNotion(message, revisedAnswer);
       }
+
+      persistRevisions([record, ...revisions]);
+
+      const updatedMessages = messages.map((item) => {
+        if (item.id !== message.id || !item.payload) return item;
+
+        return {
+          ...item,
+          payload: {
+            ...item.payload,
+            answer: revisedAnswer,
+            oldPolicyNote: `${item.payload.oldPolicyNote || ""}\n\n【担当者修正】${record.note}`,
+          },
+        };
+      });
+
+      persistMessages(updatedMessages);
+      setEditTargetId(null);
+      setEditedAnswer("");
+
+      if (settings.revisionNotionWebhookUrl.trim()) {
+        try {
+          await fetch(settings.revisionNotionWebhookUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(record),
+          });
+        } catch {
+          setError("回答修正は保存しましたが、Notion Revision DBへの送信に失敗しました。");
+        }
+      }
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "修正回答の保存中にエラーが発生しました。"
+      );
     }
   }
 
@@ -1416,7 +1525,11 @@ export default function App() {
         {renderSlidePreview(message.payload)}
 
         <div className="generated-image-box">
-          <button type="button" onClick={() => generateImageForMessage(message)} disabled={isGenerating}>
+          <button
+            type="button"
+            onClick={() => generateImageForMessage(message)}
+            disabled={isGenerating}
+          >
             {isGenerating ? "生成中..." : "図解背景画像を生成"}
           </button>
 
@@ -1436,6 +1549,9 @@ export default function App() {
     if (!message.payload) return null;
 
     const payload = message.payload;
+    const isSavingApprovedAnswer = Boolean(approvedAnswerSavingIds[message.id]);
+    const approvedAnswerSaveMessage = approvedAnswerSaveMessages[message.id];
+    const approvedAnswerSaveError = approvedAnswerSaveErrors[message.id];
 
     return (
       <article className="answer-card">
@@ -1450,7 +1566,8 @@ export default function App() {
             <div>
               <h3>回答</h3>
               <p className="meta">
-                質問：{message.question || "不明"} / 更新確認：{formatDateTime(payload.updatedAt)}
+                質問：{message.question || "不明"} / 更新確認：
+                {formatDateTime(payload.updatedAt)}
               </p>
             </div>
             <span className="section-badge">回答</span>
@@ -1508,7 +1625,7 @@ export default function App() {
         <section className="revision-panel pro-revision-panel no-print">
           <h2>回答修正</h2>
           <p className="meta">
-            回答を修正した場合、履歴として保存し、必要に応じてNotion Revision DBへ送信します。
+            回答を修正した場合、まず画面上の履歴として保存できます。承認済み回答DBへ保存すると、次回以降の優先回答候補として利用する準備ができます。
           </p>
 
           {editTargetId === message.id ? (
@@ -1518,25 +1635,76 @@ export default function App() {
                 onChange={(event) => setEditedAnswer(event.target.value)}
                 rows={8}
               />
+
               <div className="edit-actions">
-                <button type="button" className="primary" onClick={() => saveRevision(message)}>
+                <button
+                  type="button"
+                  className="primary"
+                  onClick={() => saveRevision(message)}
+                  disabled={isSavingApprovedAnswer || !editedAnswer.trim()}
+                >
                   修正を保存
                 </button>
-                <button type="button" onClick={() => setEditTargetId(null)}>
+
+                <button
+                  type="button"
+                  onClick={() =>
+                    saveRevision(message, {
+                      saveToApprovedAnswerDb: true,
+                    })
+                  }
+                  disabled={isSavingApprovedAnswer || !editedAnswer.trim()}
+                >
+                  {isSavingApprovedAnswer
+                    ? "Notionへ保存中..."
+                    : "承認済み回答DBへ保存"}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setEditTargetId(null)}
+                  disabled={isSavingApprovedAnswer}
+                >
                   キャンセル
                 </button>
               </div>
+
+              {approvedAnswerSaveMessage && (
+                <p className="meta">{approvedAnswerSaveMessage}</p>
+              )}
+
+              {approvedAnswerSaveError && (
+                <p className="error">{approvedAnswerSaveError}</p>
+              )}
             </div>
           ) : (
-            <button
-              type="button"
-              onClick={() => {
-                setEditTargetId(message.id);
-                setEditedAnswer(payload.answer);
-              }}
-            >
-              この回答を修正する
-            </button>
+            <div className="edit-box">
+              <button
+                type="button"
+                onClick={() => {
+                  setEditTargetId(message.id);
+                  setEditedAnswer(payload.answer);
+                  setApprovedAnswerSaveMessages((current) => ({
+                    ...current,
+                    [message.id]: "",
+                  }));
+                  setApprovedAnswerSaveErrors((current) => ({
+                    ...current,
+                    [message.id]: "",
+                  }));
+                }}
+              >
+                この回答を修正する
+              </button>
+
+              {approvedAnswerSaveMessage && (
+                <p className="meta">{approvedAnswerSaveMessage}</p>
+              )}
+
+              {approvedAnswerSaveError && (
+                <p className="error">{approvedAnswerSaveError}</p>
+              )}
+            </div>
           )}
         </section>
       </article>
@@ -1743,7 +1911,11 @@ export default function App() {
                 {isLoading ? "検索・回答生成中..." : "質問する"}
               </button>
 
-              <button type="button" onClick={clearMessages} disabled={isLoading || messages.length === 0}>
+              <button
+                type="button"
+                onClick={clearMessages}
+                disabled={isLoading || messages.length === 0}
+              >
                 過去の質問履歴を削除
               </button>
             </form>
@@ -1873,6 +2045,19 @@ export default function App() {
             />
           </label>
 
+          <label>
+            承認済み回答保存API URL
+            <input
+              value={settings.approvedAnswerSaveApiUrl}
+              onChange={(event) =>
+                persistSettings({
+                  ...settings,
+                  approvedAnswerSaveApiUrl: event.target.value,
+                })
+              }
+            />
+          </label>
+
           <label className="inline">
             <input
               type="checkbox"
@@ -1906,7 +2091,7 @@ export default function App() {
             <li>AIがMain Manual Databaseを検索します。</li>
             <li>回答、手順、チェックリスト、課長確認ゲートを確認します。</li>
             <li>必要に応じて印刷し、新人説明や引き継ぎ資料として使います。</li>
-            <li>必要に応じて回答修正を保存し、Notion Revision DBへ反映します。</li>
+            <li>必要に応じて回答を修正し、承認済み回答DBへ保存します。</li>
           </ol>
 
           <h3>この実装で固定した方針</h3>
@@ -1918,7 +2103,7 @@ export default function App() {
             <li>画像生成UIは現在停止中。将来再開できるようコードは残す。</li>
             <li>正確な日本語ラベル・手順・注意点はHTML/CSSで表示する。</li>
             <li>印刷時は操作ボタンや開発用情報を非表示にし、回答本文を中心に出力する。</li>
-            <li>修正回答はNotion DBへ直接追記。</li>
+            <li>修正回答は承認済み回答DBへ直接追記できる。</li>
             <li>社内利用の認証方式はメール/パスワード。</li>
           </ul>
         </section>
