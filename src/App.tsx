@@ -661,13 +661,68 @@ function stripListPrefixForUi(value: string) {
     .trim();
 }
 
-function makeSlideLabel(value: string, index: number) {
-  const text = stripListPrefixForUi(value)
+function cleanWorkflowText(value: string) {
+  return stripListPrefixForUi(value)
     .replace(/\s+/g, "")
+    .replace(/[「」『』【】]/g, "")
+    .replace(/してください/g, "")
+    .replace(/して下さい/g, "")
+    .replace(/しましょう/g, "")
+    .replace(/確認する/g, "確認")
+    .replace(/確認して/g, "確認")
+    .replace(/確認を行う/g, "確認")
+    .replace(/依頼する/g, "依頼")
+    .replace(/作成する/g, "作成")
+    .replace(/提出する/g, "提出")
+    .replace(/申請する/g, "申請")
+    .replace(/発注する/g, "発注")
+    .replace(/連絡する/g, "連絡")
+    .replace(/保存する/g, "保存")
+    .replace(/必要があります/g, "")
+    .replace(/必要がある/g, "")
+    .replace(/であること/g, "")
+    .replace(/すること/g, "")
+    .replace(/[。．、,]/g, "")
     .trim();
+}
+
+function shortenWorkflowLabel(value: string, maxLength = 9) {
+  const cleaned = cleanWorkflowText(value);
+
+  if (!cleaned) return "";
+
+  if (cleaned.length <= maxLength) {
+    return cleaned;
+  }
+
+  const phrase = cleaned
+    .split(/または|もしくは|および|及び|ならびに|並びに|して|し、|から|まで|について|に関して|の場合/)
+    .map((item) => item.trim())
+    .find((item) => item.length >= 3);
+
+  if (phrase && phrase.length <= maxLength) {
+    return phrase;
+  }
+
+  if (phrase && phrase.length > maxLength) {
+    return `${phrase.slice(0, maxLength)}…`;
+  }
+
+  return `${cleaned.slice(0, maxLength)}…`;
+}
+
+function makeSlideLabel(value: string, index: number) {
+  const text = cleanWorkflowText(value);
 
   const rules = [
+    { keys: ["承認済み回答"], label: "承認DB確認" },
+    { keys: ["Approved"], label: "承認DB確認" },
+    { keys: ["MainManual"], label: "マニュアル確認" },
+    { keys: ["ManualDatabase"], label: "マニュアル確認" },
+    { keys: ["Notion"], label: "Notion確認" },
     { keys: ["問い合わせ", "確認"], label: "内容確認" },
+    { keys: ["質問", "確認"], label: "質問確認" },
+    { keys: ["参加対象外"], label: "対象外判断" },
     { keys: ["参加対象"], label: "参加条件" },
     { keys: ["大学生"], label: "大学生確認" },
     { keys: ["大学院生"], label: "大学院生確認" },
@@ -676,40 +731,48 @@ function makeSlideLabel(value: string, index: number) {
     { keys: ["代替"], label: "代替案内" },
     { keys: ["別窓口"], label: "窓口確認" },
     { keys: ["最新", "確認"], label: "最新確認" },
+    { keys: ["学内", "確認"], label: "学内確認" },
     { keys: ["学内", "指示"], label: "学内確認" },
-    { keys: ["見積"], label: "見積依頼" },
+    { keys: ["COUPA", "見積"], label: "COUPA見積" },
+    { keys: ["Coupa", "見積"], label: "COUPA見積" },
+    { keys: ["見積", "依頼"], label: "見積依頼" },
+    { keys: ["見積"], label: "見積確認" },
+    { keys: ["キャンパスインフォメーション"], label: "入構確認" },
+    { keys: ["入構", "確認"], label: "入構確認" },
+    { keys: ["入構"], label: "入構手続" },
+    { keys: ["スマートDB"], label: "スマートDB申請" },
+    { keys: ["SmartDB"], label: "スマートDB申請" },
+    { keys: ["バス", "手配書"], label: "手配書作成" },
+    { keys: ["駐車届"], label: "駐車届作成" },
     { keys: ["発注"], label: "発注" },
+    { keys: ["請求書", "提出"], label: "請求書提出" },
     { keys: ["請求"], label: "請求確認" },
     { keys: ["納品"], label: "納品確認" },
     { keys: ["支払"], label: "支払確認" },
     { keys: ["契約"], label: "契約確認" },
+    { keys: ["課長", "確認"], label: "課長確認" },
+    { keys: ["上長", "確認"], label: "上長確認" },
     { keys: ["アレルギー"], label: "情報確認" },
     { keys: ["給食"], label: "給食確認" },
     { keys: ["空港"], label: "送迎確認" },
+    { keys: ["送迎"], label: "送迎確認" },
     { keys: ["宿泊"], label: "宿泊確認" },
     { keys: ["保険"], label: "保険確認" },
     { keys: ["メール"], label: "メール連絡" },
     { keys: ["学生"], label: "学生対応" },
     { keys: ["教員"], label: "教員確認" },
+    { keys: ["国際課"], label: "国際課確認" },
+    { keys: ["提出"], label: "提出" },
+    { keys: ["保存"], label: "保存" },
   ];
 
   const matched = rules.find((rule) => rule.keys.every((key) => text.includes(key)));
 
   if (matched) return matched.label;
 
-  const cleaned = text
-    .replace(/してください/g, "")
-    .replace(/確認する/g, "確認")
-    .replace(/確認して/g, "確認")
-    .replace(/必要がある/g, "")
-    .replace(/であること/g, "")
-    .replace(/すること/g, "")
-    .replace(/する/g, "")
-    .replace(/[。．、,]/g, "");
+  const shortened = shortenWorkflowLabel(value);
 
-  if (cleaned.length <= 8) return cleaned;
-
-  return `手順${index + 1}`;
+  return shortened || `Step ${index + 1}`;
 }
 
 function buildBackgroundImagePrompt(payload: AnswerPayload) {
@@ -1475,23 +1538,26 @@ export default function App() {
   }
 
   function renderSlidePreview(payload: AnswerPayload) {
-    const steps = payload.steps.slice(0, 6);
+    const steps = payload.steps
+      .map((step) => step.trim())
+      .filter(Boolean)
+      .slice(0, 6);
 
     if (steps.length === 0) return null;
 
     return (
       <div className="slide-preview-card">
         <div className="slide-preview-header">
-          <h5>1枚スライド用 図解プレビュー</h5>
+          <h5>1枚スライド用 図解フロー</h5>
           <p>
-            正確な日本語はHTML/CSSで表示しています。背景画像を生成する場合も、日本語文字は画像に描かせません。
+            回答の手順から自動で短い業務ラベルを作成しています。カードにマウスを置くと元の手順を確認できます。
           </p>
         </div>
 
         <div className="slide-flow-row">
           {steps.map((step, index) => (
             <div className="slide-step-wrap" key={`${step}-${index}`}>
-              <div className="slide-step-card">
+              <div className="slide-step-card" title={step} aria-label={step}>
                 <span className="slide-step-number">{index + 1}</span>
                 <p className="slide-step-title">{makeSlideLabel(step, index)}</p>
               </div>
@@ -1514,12 +1580,12 @@ export default function App() {
       <section className="answer-section image-section no-print">
         <div className="section-heading-row">
           <div>
-            <h4>図解フロー・背景画像</h4>
+            <h4>図解フロー</h4>
             <p className="meta">
-              現在は画像生成を停止中です。必要になれば、ここから再開できます。
+              回答の手順をもとに、業務の流れを短いカードで表示します。背景画像生成は現在停止中です。
             </p>
           </div>
-          <span className="section-badge">停止中</span>
+          <span className="section-badge">Flow</span>
         </div>
 
         {renderSlidePreview(message.payload)}
@@ -1528,9 +1594,13 @@ export default function App() {
           <button
             type="button"
             onClick={() => generateImageForMessage(message)}
-            disabled={isGenerating}
+            disabled={!ENABLE_IMAGE_GENERATION || isGenerating}
           >
-            {isGenerating ? "生成中..." : "図解背景画像を生成"}
+            {ENABLE_IMAGE_GENERATION
+              ? isGenerating
+                ? "生成中..."
+                : "図解背景画像を生成"
+              : "背景画像生成は停止中"}
           </button>
 
           {imageError && <p className="error">{imageError}</p>}
