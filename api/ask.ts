@@ -149,6 +149,7 @@ const MAX_CONTEXT_CHARS_PER_DOC = 1700;
 const MAX_OUTPUT_TOKENS = 1700;
 
 const MIN_CONFIDENT_SCORE = 45;
+const MIN_DIRECT_ANSWER_SCORE = 80;
 const MIN_SEARCH_API_SCORE_WHEN_DATABASE_HIT_EXISTS = 80;
 
 const NOTION_TIMEOUT_MS = 7000;
@@ -1173,17 +1174,6 @@ async function buildAnswer(
   documents: SearchDocument[],
   debug: SearchDebug
 ): Promise<AnswerPayload> {
-  const openaiApiKey = getEnv("OPENAI_API_KEY");
-
-  if (!openaiApiKey) {
-    return createFallbackPayload({
-      question,
-      documents,
-      debug,
-      note: "OPENAI_API_KEY が設定されていないため、Notion検索結果をもとに暫定回答を表示しています。",
-    });
-  }
-
   if (documents.length === 0) {
     return createFallbackPayload({
       question,
@@ -1204,6 +1194,22 @@ async function buildAnswer(
     });
   }
 
+  const directAnswerPayload = createDirectAnswerPayloadIfReliable(question, documents, debug);
+  if (directAnswerPayload) {
+    return directAnswerPayload;
+  }
+
+  const openaiApiKey = getEnv("OPENAI_API_KEY");
+
+  if (!openaiApiKey) {
+    return createFallbackPayload({
+      question,
+      documents,
+      debug,
+      note: "OPENAI_API_KEY が設定されていないため、Notion検索結果をもとに暫定回答を表示しています。",
+    });
+  }
+
   const context = buildContextForAi(documents);
   const schema = buildAnswerJsonSchema();
 
@@ -1211,8 +1217,12 @@ async function buildAnswer(
     "あなたはRSJP業務マニュアルAIです。",
     "目的は、新人職員が迷わず進め、危ない判断では課長確認で止まれるようにすることです。",
     "Notionの参照情報に基づいて、日本語で実務的に回答してください。",
+    "外部知識、一般知識、推測、連想で不足情報を補ってはいけません。",
+    "Notion参照情報に明記されていない学校名、団体名、住所、電話番号、URL、担当部署名、制度名、料金、日付を作ってはいけません。",
+    "このアプリ内で OIC と書かれている場合は、立命館大学大阪いばらきキャンパスの文脈として扱います。ただし、Notion参照情報に明記されていない住所・電話番号・外部団体名は出力しないでください。",
     "Reference 1 は最も重要な参照元です。まずReference 1を優先してください。",
     "Question欄とAnswer欄に明記されている内容を最優先してください。",
+    "Answer欄がある場合は、Answer欄の内容を中心に回答し、勝手に補足しないでください。",
     "Notion Search APIの結果とManual Databaseの結果が矛盾する場合は、Manual Databaseを優先してください。",
     "Notionで確認できたことと、確認できなかったことを分けてください。",
     "費用、見積、請求、契約、支払、受入可否、例外対応、先方への確約、個人情報、アレルギー、医療情報は課長確認が必要です。",
@@ -1231,6 +1241,9 @@ async function buildAnswer(
     "- answer は、初心者向けに読みやすい本文にする。",
     "- Notionに明記されているAnswer欄の内容は、勝手に省略・否定しない。",
     "- 参照元がQuestion/Answer形式の場合は、そのAnswerを中心に回答する。",
+    "- Notionに書かれていない学校名、住所、電話番号、URL、担当部署、料金、日付は絶対に追加しない。",
+    "- OICを外部の学校名として解釈しない。OICは立命館大学大阪いばらきキャンパスの文脈として扱う。",
+    "- 不足情報がある場合は、補完せず『Notionでは確認できません』と書く。",
     "- steps は、新人が順番に進められる手順にする。",
     "- checklist は、作業前後の確認項目にする。",
     "- managerGate は、課長確認が必要な判断を明確にする。",
@@ -1298,6 +1311,92 @@ async function buildAnswer(
   }
 }
 
+function createDirectAnswerPayloadIfReliable(
+  question: string,
+  documents: SearchDocument[],
+  debug: SearchDebug
+): AnswerPayload | null {
+  const topDocument = documents[0];
+
+  if (!topDocument) {
+    return null;
+  }
+
+  if (topDocument.sourceType !== "database") {
+    return null;
+  }
+
+  if (topDocument.score < MIN_DIRECT_ANSWER_SCORE) {
+    return null;
+  }
+
+  const answerText = normalizeString(topDocument.answerText);
+
+  if (!answerText || answerText.length < 8) {
+    return null;
+  }
+
+  const answer = [
+    "NotionのAnswer欄では、以下のように案内されています。",
+    "",
+    answerText,
+    "",
+    "※この回答はNotionのAnswer欄をもとにしています。Notionに記載のない学校名・住所・電話番号・URLなどは補足していません。",
+  ].join("\n");
+
+  return {
+    answer,
+    managerGate: createSafeManagerGateForDirectAnswer(topDocument),
+    steps: [
+      "まずNotionのAnswer欄の内容を確認する",
+      "今回の質問・参加者・プログラムにそのまま当てはまるか確認する",
+      "先方へ案内する場合は、Notionに記載のない情報を追加しない",
+      "例外対応、費用、安全面、契約判断が関係する場合は課長確認を行う",
+    ],
+    checklist: [
+      { text: "採用されたNotionページが質問内容と一致している" },
+      { text: "Answer欄の内容を確認した" },
+      { text: "Notionにない固有名詞・住所・電話番号・URLを追加していない" },
+      { text: "例外対応や判断が必要な内容は課長確認に回した" },
+    ],
+    imagePrompt: buildImagePrompt("RSJP FAQ answer workflow"),
+    imageUrl: "",
+    references: buildReferences(documents),
+    updatedAt: new Date().toISOString(),
+    oldPolicyNote:
+      "FAQ形式のNotionページにAnswer欄があるため、外部知識で補完せず、NotionのAnswer欄を優先して回答しています。",
+    debug: {
+      search: debug,
+    },
+  };
+}
+
+function createSafeManagerGateForDirectAnswer(document: SearchDocument): ManagerGate {
+  return {
+    canProceedAlone: [
+      "NotionのAnswer欄に書かれた範囲を確認する",
+      "Notionの記載をもとに案内文の下書きを作成する",
+      "参照元ページとAnswer欄を確認する",
+    ],
+    needManagerApproval: [
+      "Notionにない内容を補足して案内する場合",
+      "費用、契約、支払、キャンセル、受入可否、安全面に関わる判断がある場合",
+      "参加者や相手機関に対して例外的な対応を認める場合",
+      "Notionの記載と実際の運用が違う可能性がある場合",
+    ],
+    approvalTiming: [
+      "先方へ回答する前",
+      "Notionにない情報を追加したくなった時",
+      "例外対応や判断を含む案内をする前",
+    ],
+    managerQuestionTemplate: [
+      `以下のNotionページを参照しました：${document.title}`,
+      "Answer欄では〇〇と記載されています。",
+      "この内容をもとに先方へ案内してよろしいでしょうか。",
+    ].join("\n"),
+  };
+}
+
 function getOpenAiModel(): string {
   const fastModel = getEnv("OPENAI_MODEL_FAST");
 
@@ -1333,6 +1432,8 @@ function buildContextForAi(documents: SearchDocument[]): string {
         document.keywordText ? `Keyword field: ${document.keywordText}` : "",
         document.categoryText ? `Category field: ${document.categoryText}` : "",
         document.programText ? `Program field: ${document.programText}` : "",
+        "Strict safety rule:",
+        "Use only the information written in this reference. Do not add school names, addresses, phone numbers, URLs, fees, dates, or department names that are not written here.",
         "Content:",
         excerpt,
       ]
