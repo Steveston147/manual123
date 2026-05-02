@@ -979,6 +979,36 @@ function renderWorkflowStrip() {
   );
 }
 
+function renderLoadingCard() {
+  return (
+    <div className="loading-card pro-loading-card no-print">
+      <div className="loading-header">
+        <div className="search-orbit" aria-hidden="true">
+          <span className="search-orbit-core" />
+        </div>
+
+        <div>
+          <p className="loading-title">Main Manual Databaseを確認しています</p>
+          <p className="loading-subtitle">
+            関連ページを検索し、根拠に基づいて回答を整理しています。
+          </p>
+        </div>
+      </div>
+
+      <div className="search-runway" aria-hidden="true">
+        <span className="search-runner" />
+      </div>
+
+      <div className="loading-steps">
+        <span>質問解析</span>
+        <span>Notion検索</span>
+        <span>根拠確認</span>
+        <span>回答生成</span>
+      </div>
+    </div>
+  );
+}
+
 function renderManagerGate(managerGate?: ManagerGate) {
   const gate = normalizeManagerGate(managerGate);
 
@@ -1054,9 +1084,7 @@ export default function App() {
 
   const latestAssistantMessage = useMemo(
     () =>
-      [...messages]
-        .reverse()
-        .find((message) => message.role === "assistant" && message.payload),
+      messages.find((message) => message.role === "assistant" && message.payload),
     [messages]
   );
 
@@ -1066,9 +1094,7 @@ export default function App() {
   );
 
   const latestQuestionText = useMemo(() => {
-    const latestQuestion = [...messages]
-      .reverse()
-      .find((message) => message.role === "user" && message.rawText);
+    const latestQuestion = messages.find((message) => message.role === "user" && message.rawText);
 
     return latestQuestion?.rawText ?? "まだ質問はありません。";
   }, [messages]);
@@ -1149,28 +1175,19 @@ export default function App() {
       const response = await fetch(settings.authWebhookUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: email.trim(), password }),
+        body: JSON.stringify({ email, password }),
       });
 
-      const text = await response.text();
+      if (!response.ok) throw new Error("認証に失敗しました。");
 
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${text.slice(0, 200)}`);
-      }
+      const data = (await response.json()) as Partial<AuthState>;
 
-      let parsed: { token?: string } = {};
-
-      try {
-        parsed = JSON.parse(text) as { token?: string };
-      } catch {
-        // plain text response fallback
+      if (!data.email || !data.token) {
+        throw new Error("認証レスポンスが不正です。");
       }
 
       setMessages(loadMessagesFromStorage());
-      setAuth({
-        email: email.trim(),
-        token: parsed.token ?? "token-from-auth-webhook",
-      });
+      setAuth({ email: data.email, token: data.token });
       setPassword("");
     } catch (err) {
       setError(err instanceof Error ? err.message : "ログインに失敗しました。");
@@ -1182,46 +1199,37 @@ export default function App() {
   async function submitQuestion(e: FormEvent) {
     e.preventDefault();
 
-    const trimmed = question.trim();
+    if (!auth) {
+      setError("ログインしてください。");
+      return;
+    }
 
-    if (!trimmed || isLoading || !auth) return;
+    const trimmedQuestion = question.trim();
 
-    setError(null);
-    setIsLoading(true);
+    if (!trimmedQuestion) {
+      setError("質問を入力してください。");
+      return;
+    }
 
     const userMessage: ChatMessage = {
       id: makeId(),
       role: "user",
-      rawText: trimmed,
+      rawText: trimmedQuestion,
       createdAt: nowIso(),
     };
 
-    const pendingAssistant: ChatMessage = {
-      id: makeId(),
-      role: "assistant",
-      question: trimmed,
-      payload: normalizeAnswerPayload(trimmed, {
-        answer: "回答を生成中です…",
-        steps: [],
-        checklist: [],
-        imagePrompt: "",
-        managerGate: DEFAULT_MANAGER_GATE,
-      }),
-      createdAt: nowIso(),
-    };
-
-    const base = normalizeChatMessages([...messages, userMessage, pendingAssistant]);
-
-    persistMessages(base);
+    setError(null);
     setQuestion("");
+    setIsLoading(true);
+    persistMessages([userMessage, ...messages]);
 
-    const requestBody = buildAskRequest(trimmed, auth, settings);
+    const requestBody = buildAskRequest(trimmedQuestion, auth, settings);
 
     try {
-      let nextPayload: AnswerPayload;
+      let payload: AnswerPayload;
 
       if (shouldUseLocalMock(settings.qaWebhookUrl)) {
-        nextPayload = normalizeAnswerPayload(trimmed, await localAskMock(requestBody));
+        payload = await localAskMock(requestBody);
       } else {
         const response = await fetch(settings.qaWebhookUrl, {
           method: "POST",
@@ -1232,464 +1240,294 @@ export default function App() {
           body: JSON.stringify(requestBody),
         });
 
-        const rawText = await response.text();
-
         if (!response.ok) {
-          throw new Error(`HTTP ${response.status}: ${rawText.slice(0, 200)}`);
+          const detail = await response.text();
+          throw new Error(`回答取得に失敗しました。${detail}`);
         }
 
-        let parsed: unknown = rawText;
-
-        try {
-          parsed = JSON.parse(rawText);
-        } catch {
-          // plain text fallback
-        }
-
-        nextPayload = assistantFromRaw(trimmed, parsed);
+        const raw = await response.json();
+        payload = assistantFromRaw(trimmedQuestion, raw);
       }
 
-      persistMessages(
-        base.map((message) =>
-          message.id === pendingAssistant.id
-            ? { ...message, payload: normalizeAnswerPayload(trimmed, nextPayload) }
-            : message
-        )
-      );
-    } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : "不明なエラーです。";
-      setError(errorMessage);
+      const assistantMessage: ChatMessage = {
+        id: makeId(),
+        role: "assistant",
+        question: trimmedQuestion,
+        payload,
+        createdAt: nowIso(),
+      };
 
-      persistMessages(
-        base.map((message) =>
-          message.id === pendingAssistant.id
-            ? {
-                ...message,
-                payload: normalizeAnswerPayload(trimmed, {
-                  answer:
-                    "回答取得に失敗しました。送信先URL、API実行状態、またはCORS設定を確認してください。",
-                  managerGate: DEFAULT_MANAGER_GATE,
-                  steps: [
-                    "運用設定のQ&A API URLを確認する",
-                    "開発中は /api/ask を指定する",
-                    "Vercelデプロイ後は /api/ask の本物のAPIが動くか確認する",
-                    "再度同じ質問で実行する",
-                  ],
-                  checklist: [
-                    { text: "接続設定を確認した" },
-                    { text: "先方へ回答する前に課長確認が必要な内容を確認した" },
-                  ],
-                  imagePrompt: "",
-                  oldPolicyNote: errorMessage,
-                  debug: {
-                    search: {
-                      searchTerms: [],
-                      searchQueries: [trimmed],
-                      databasePageCount: 0,
-                      seedPageCount: 0,
-                      discoveredPageCount: 0,
-                      selectedPageCount: 0,
-                      maxScore: 0,
-                      minimumScore: 0,
-                      selectedPages: [],
-                      sourceCounts: {},
-                      errors: [errorMessage],
-                    },
-                  },
-                }),
-              }
-            : message
-        )
-      );
+      persistMessages([assistantMessage, userMessage, ...messages]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "回答取得中にエラーが発生しました。");
+      persistMessages(messages);
     } finally {
       setIsLoading(false);
     }
   }
 
-  async function generateImage(messageId: string, payload: AnswerPayload) {
-    if (!auth) return;
+  async function generateImageForMessage(message: ChatMessage) {
+    if (!message.payload) return;
 
-    const imagePrompt = buildBackgroundImagePrompt(payload).trim();
-
-    if (!imagePrompt) {
+    if (!ENABLE_IMAGE_GENERATION) {
       setImageErrors((current) => ({
         ...current,
-        [messageId]: "背景画像プロンプトが空のため、画像を生成できません。",
+        [message.id]: "画像生成は現在停止中です。必要になった段階で再開できます。",
       }));
       return;
     }
 
-    setImageLoadingIds((current) => ({ ...current, [messageId]: true }));
-    setImageErrors((current) => {
-      const next = { ...current };
-      delete next[messageId];
-      return next;
-    });
+    setImageErrors((current) => ({ ...current, [message.id]: "" }));
+    setImageLoadingIds((current) => ({ ...current, [message.id]: true }));
 
     try {
+      const prompt = buildBackgroundImagePrompt(message.payload);
+
       const response = await fetch("/api/generate-image", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${auth.token}`,
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          imagePrompt,
-          model: settings.imageModel,
+          prompt,
           size: "1536x1024",
-          quality: "medium",
+          quality: "high",
         }),
       });
 
-      const parsed = (await response.json()) as GenerateImageResponse;
+      const data = (await response.json()) as GenerateImageResponse;
 
-      if (!response.ok || !parsed.ok || !parsed.imageUrl) {
-        throw new Error(
-          parsed.error ||
-            `画像生成に失敗しました。HTTP ${response.status}`
-        );
+      if (!response.ok || !data.ok || !data.imageUrl) {
+        throw new Error(data.error || "画像生成に失敗しました。");
       }
 
-      setGeneratedImageUrls((current) => ({
-        ...current,
-        [messageId]: parsed.imageUrl!,
-      }));
+      setGeneratedImageUrls((current) => ({ ...current, [message.id]: data.imageUrl || "" }));
     } catch (err) {
       setImageErrors((current) => ({
         ...current,
-        [messageId]:
-          err instanceof Error
-            ? err.message
-            : "画像生成で不明なエラーが発生しました。",
+        [message.id]: err instanceof Error ? err.message : "画像生成に失敗しました。",
       }));
     } finally {
-      setImageLoadingIds((current) => ({ ...current, [messageId]: false }));
+      setImageLoadingIds((current) => ({ ...current, [message.id]: false }));
     }
   }
 
-  async function saveRevision() {
-    if (!editTargetId || !editedAnswer.trim() || !auth) return;
-
-    if (
-      !settings.revisionNotionWebhookUrl.trim() ||
-      !settings.notionRevisionDatabaseId.trim()
-    ) {
-      setError("Notion追記用API URLとRevision DB IDを設定してください。");
-      return;
-    }
-
-    const target = messages.find((message) => message.id === editTargetId);
-
-    if (!target?.payload || !target.question) return;
+  async function saveRevision(message: ChatMessage) {
+    if (!message.payload || !editedAnswer.trim()) return;
 
     const record: RevisionRecord = {
       id: makeId(),
-      question: target.question,
-      originalAnswer: target.payload.answer,
+      question: message.question || "",
+      originalAnswer: message.payload.answer,
       revisedAnswer: editedAnswer.trim(),
       revisedAt: nowIso(),
-      note: "ユーザーが画面上で回答を修正",
+      note: "担当者が画面上で回答を修正しました。",
     };
 
     persistRevisions([record, ...revisions]);
 
-    persistMessages(
-      messages.map((message) =>
-        message.id === editTargetId
-          ? {
-              ...message,
-              payload: normalizeAnswerPayload(target.question ?? "", {
-                ...message.payload!,
-                answer: editedAnswer.trim(),
-                updatedAt: nowIso(),
-              }),
-            }
-          : message
-      )
-    );
+    const updatedMessages = messages.map((item) => {
+      if (item.id !== message.id || !item.payload) return item;
 
-    try {
-      await fetch(settings.revisionNotionWebhookUrl, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${auth.token}`,
+      return {
+        ...item,
+        payload: {
+          ...item.payload,
+          answer: editedAnswer.trim(),
+          oldPolicyNote: `${item.payload.oldPolicyNote || ""}\n\n【担当者修正】${record.note}`,
         },
-        body: JSON.stringify({
-          destination: {
-            provider: "notion-api",
-            databaseId: settings.notionRevisionDatabaseId,
-          },
-          revisedBy: auth.email,
-          ...record,
-        }),
-      });
-    } catch {
-      setError("Notion追記に失敗しました。API実行ログを確認してください。");
-    }
+      };
+    });
 
+    persistMessages(updatedMessages);
     setEditTargetId(null);
     setEditedAnswer("");
-  }
 
-  function renderLoadingCard() {
-    return (
-      <div className="loading-card" aria-live="polite">
-        <div className="loading-header">
-          <div className="loading-spinner" />
-          <div>
-            <p className="loading-title">生成中です</p>
-            <p className="loading-subtitle">Notionを確認しながら回答を組み立てています。もう少しお待ちください。</p>
-          </div>
-        </div>
-        <div className="loading-progress">
-          <span />
-        </div>
-        <div className="loading-steps">
-          <span>検索</span>
-          <span>整理</span>
-          <span>回答作成</span>
-        </div>
-      </div>
-    );
+    if (settings.revisionNotionWebhookUrl.trim()) {
+      try {
+        await fetch(settings.revisionNotionWebhookUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(record),
+        });
+      } catch {
+        setError("回答修正は保存しましたが、Notion Revision DBへの送信に失敗しました。");
+      }
+    }
   }
 
   function renderSlidePreview(payload: AnswerPayload) {
-    const slideSteps = payload.steps.slice(0, 6);
-    const slideNotes = payload.checklist.slice(0, 3).map((item) => item.text);
+    const steps = payload.steps.slice(0, 6);
+
+    if (steps.length === 0) return null;
 
     return (
       <div className="slide-preview-card">
         <div className="slide-preview-header">
-          <p className="mini-label">文字崩れ対策版</p>
-          <h5>業務フロー図解</h5>
+          <h5>1枚スライド用 図解プレビュー</h5>
           <p>
-            図解の正確な日本語は、画像生成AIではなくこの画面上のHTML/CSSで表示します。
+            正確な日本語はHTML/CSSで表示しています。背景画像を生成する場合も、日本語文字は画像に描かせません。
           </p>
         </div>
 
         <div className="slide-flow-row">
-          {slideSteps.length > 0 ? (
-            slideSteps.map((step, index) => (
-              <div className="slide-step-wrap" key={`${step}-${index}`}>
-                <div className="slide-step-card">
-                  <span className="slide-step-number">{index + 1}</span>
-                  <p className="slide-step-title">{makeSlideLabel(step, index)}</p>
-                </div>
-
-                {index < slideSteps.length - 1 && (
-                  <span className="slide-arrow">→</span>
-                )}
+          {steps.map((step, index) => (
+            <div className="slide-step-wrap" key={`${step}-${index}`}>
+              <div className="slide-step-card">
+                <span className="slide-step-number">{index + 1}</span>
+                <p className="slide-step-title">{makeSlideLabel(step, index)}</p>
               </div>
-            ))
-          ) : (
-            <p className="meta">手順が生成されると、ここに図解カードを表示します。</p>
-          )}
+              {index < steps.length - 1 && <span className="slide-arrow">→</span>}
+            </div>
+          ))}
         </div>
-
-        {slideSteps.length > 0 && (
-          <div className="slide-detail-list">
-            <p className="mini-label">ステップ詳細</p>
-
-            {slideSteps.map((step, index) => (
-              <div className="slide-detail-item" key={`detail-${step}-${index}`}>
-                <span className="slide-detail-number">{index + 1}</span>
-                <p className="slide-detail-text">{stripListPrefixForUi(step)}</p>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {slideNotes.length > 0 && (
-          <div className="slide-note-box">
-            <p className="mini-label">注意点</p>
-            <ul>
-              {slideNotes.map((note, index) => (
-                <li key={`${note}-${index}`}>{stripListPrefixForUi(note)}</li>
-              ))}
-            </ul>
-          </div>
-        )}
       </div>
     );
   }
 
-  function renderAssistant(messageId: string, payload: AnswerPayload) {
-    const safePayload = normalizeAnswerPayload("", payload);
-    const isGeneratingImage = Boolean(imageLoadingIds[messageId]);
-    const imageError = imageErrors[messageId];
-    const displayImageUrl = generatedImageUrls[messageId] || safePayload.imageUrl;
-    const backgroundPrompt = buildBackgroundImagePrompt(safePayload);
-    const isPendingAnswer = safePayload.answer === "回答を生成中です…" && safePayload.steps.length === 0;
+  function renderGeneratedImage(message: ChatMessage) {
+    if (!message.payload) return null;
 
-    if (isPendingAnswer) {
-      return renderLoadingCard();
-    }
+    const url = generatedImageUrls[message.id] || message.payload.imageUrl || "";
+    const isGenerating = Boolean(imageLoadingIds[message.id]);
+    const imageError = imageErrors[message.id];
 
     return (
-      <article className="answer-card printable-answer">
+      <section className="answer-section image-section no-print">
+        <div className="section-heading-row">
+          <div>
+            <h4>図解フロー・背景画像</h4>
+            <p className="meta">
+              現在は画像生成を停止中です。必要になれば、ここから再開できます。
+            </p>
+          </div>
+          <span className="section-badge">停止中</span>
+        </div>
+
+        {renderSlidePreview(message.payload)}
+
+        <div className="generated-image-box">
+          <button type="button" onClick={() => generateImageForMessage(message)} disabled={isGenerating}>
+            {isGenerating ? "生成中..." : "図解背景画像を生成"}
+          </button>
+
+          {imageError && <p className="error">{imageError}</p>}
+
+          {url && (
+            <div className="generated-image-preview">
+              <img src={url} alt="AI generated workflow background" />
+            </div>
+          )}
+        </div>
+      </section>
+    );
+  }
+
+  function renderAssistant(message: ChatMessage) {
+    if (!message.payload) return null;
+
+    const payload = message.payload;
+
+    return (
+      <article className="answer-card">
         <div className="answer-toolbar no-print">
           <button type="button" onClick={printAnswer}>
-            この回答を印刷
+            印刷
           </button>
         </div>
 
         <section className="answer-section answer-section-main">
           <div className="section-heading-row">
-            <h3>回答（初心者向け）</h3>
-            <span className="section-badge">まず読む</span>
+            <div>
+              <h3>回答</h3>
+              <p className="meta">
+                質問：{message.question || "不明"} / 更新確認：{formatDateTime(payload.updatedAt)}
+              </p>
+            </div>
+            <span className="section-badge">回答</span>
           </div>
-
-          <p className="answer-text">{safePayload.answer}</p>
+          <p className="answer-text">{payload.answer}</p>
         </section>
 
-        {renderManagerGate(safePayload.managerGate)}
+        {renderManagerGate(payload.managerGate)}
 
         <section className="answer-section">
           <div className="section-heading-row">
-            <h4>手順（この順番で実施）</h4>
-            <span className="section-badge">実行順</span>
+            <h4>手順</h4>
+            <span className="section-badge">Step</span>
           </div>
-
-          {safePayload.steps.length > 0 ? (
-            <ol className="step-list">
-              {safePayload.steps.map((step, index) => (
-                <li key={`${step}-${index}`}>{step}</li>
-              ))}
-            </ol>
-          ) : (
-            <p className="meta">手順はまだ生成中です。</p>
-          )}
+          <ol className="step-list">
+            {payload.steps.map((step, index) => (
+              <li key={`${step}-${index}`}>{step}</li>
+            ))}
+          </ol>
         </section>
 
         <section className="answer-section">
           <div className="section-heading-row">
             <h4>チェックリスト</h4>
-            <span className="section-badge">抜け漏れ確認</span>
+            <span className="section-badge">Check</span>
           </div>
-
-          {safePayload.checklist.length > 0 ? (
-            <ul className="checklist">
-              {safePayload.checklist.map((item, index) => (
-                <li key={`${item.text}-${index}`}>
-                  <input type="checkbox" checked={Boolean(item.done)} readOnly />
-                  <span>{item.text}</span>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p className="meta">チェックリストはまだ生成中です。</p>
-          )}
+          <ul className="checklist">
+            {payload.checklist.map((item, index) => (
+              <li key={`${item.text}-${index}`}>
+                <input type="checkbox" defaultChecked={item.done} />
+                <span>{item.text}</span>
+              </li>
+            ))}
+          </ul>
         </section>
 
-        {ENABLE_IMAGE_GENERATION && (
-          <section className="answer-section image-section">
-            <div className="section-heading-row">
-              <h4>1枚スライド用の図解</h4>
-              <span className="section-badge">文字はUI表示</span>
-            </div>
-
-            {renderSlidePreview(safePayload)}
-
-            <details className="image-prompt-box no-print">
-              <summary>背景画像プロンプト（画像生成に使う内容）</summary>
-              <p>{backgroundPrompt}</p>
-            </details>
-
-            {safePayload.imagePrompt && (
-              <details className="debug-panel raw-prompt-panel no-print">
-                <summary>AIが返した元の図解プロンプト（参考・画像生成には使いません）</summary>
-                <p className="meta">{safePayload.imagePrompt}</p>
-              </details>
-            )}
-
-            <div className="generated-image-box no-print">
-              <button
-                type="button"
-                className="primary"
-                onClick={() => void generateImage(messageId, safePayload)}
-                disabled={isGeneratingImage || !backgroundPrompt.trim()}
-              >
-                {isGeneratingImage
-                  ? "背景画像を生成中..."
-                  : displayImageUrl
-                    ? "背景画像を再生成"
-                    : "背景画像を生成"}
-              </button>
-            </div>
-
-            {isGeneratingImage && (
-              <div className="mini-loading-row no-print">
-                <span className="mini-spinner" />
-                <span>背景画像を生成しています。少し時間がかかります。</span>
-              </div>
-            )}
-
-            {imageError && <p className="error no-print">{imageError}</p>}
-
-            {displayImageUrl ? (
-              <div className="generated-image-box">
-                <a
-                  href={displayImageUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="inline-link no-print"
-                >
-                  画像を開く
-                </a>
-
-                <img
-                  src={displayImageUrl}
-                  alt="生成された背景画像"
-                  className="generated-image"
-                />
-              </div>
-            ) : (
-              <div className="image-empty-box no-print">
-                <p className="image-empty-title">背景画像はまだ生成されていません。</p>
-                <p className="meta">
-                  日本語は上の図解カードで表示します。画像生成は背景・雰囲気用です。
-                </p>
-              </div>
-            )}
-          </section>
-        )}
+        {renderGeneratedImage(message)}
 
         <section className="answer-section">
-          <div className="section-heading-row">
-            <h4>最新情報ポリシー</h4>
-            <span className="section-badge">確認用</span>
-          </div>
-
-          <div className="info-grid">
-            <div>
-              <p className="mini-label">最新更新日時</p>
-              <p className="meta">{formatDateTime(safePayload.updatedAt)}</p>
-            </div>
-
-            <div>
-              <p className="mini-label">過去運用メモ</p>
-              <p className="meta">{safePayload.oldPolicyNote ?? "未取得"}</p>
-            </div>
-          </div>
+          <h4>参照元</h4>
+          <ul className="compact-list">
+            {(payload.references || []).map((reference, index) => (
+              <li key={`${reference}-${index}`}>{reference}</li>
+            ))}
+          </ul>
         </section>
 
-        {safePayload.references && safePayload.references.length > 0 && (
-          <section className="answer-section">
-            <div className="section-heading-row">
-              <h4>参照元</h4>
-              <span className="section-badge">根拠</span>
+        <section className="answer-section no-print">
+          <h4>最新情報ポリシー</h4>
+          <p className="meta">{payload.oldPolicyNote}</p>
+        </section>
+
+        {renderSearchDebug(payload.debug?.search)}
+
+        <section className="revision-panel pro-revision-panel no-print">
+          <h2>回答修正</h2>
+          <p className="meta">
+            回答を修正した場合、履歴として保存し、必要に応じてNotion Revision DBへ送信します。
+          </p>
+
+          {editTargetId === message.id ? (
+            <div className="edit-box">
+              <textarea
+                value={editedAnswer}
+                onChange={(event) => setEditedAnswer(event.target.value)}
+                rows={8}
+              />
+              <div className="edit-actions">
+                <button type="button" className="primary" onClick={() => saveRevision(message)}>
+                  修正を保存
+                </button>
+                <button type="button" onClick={() => setEditTargetId(null)}>
+                  キャンセル
+                </button>
+              </div>
             </div>
-
-            <ul className="reference-list">
-              {safePayload.references.map((ref, index) => (
-                <li key={`${ref}-${index}`}>{ref}</li>
-              ))}
-            </ul>
-          </section>
-        )}
-
-        {renderSearchDebug(safePayload.debug?.search)}
+          ) : (
+            <button
+              type="button"
+              onClick={() => {
+                setEditTargetId(message.id);
+                setEditedAnswer(payload.answer);
+              }}
+            >
+              この回答を修正する
+            </button>
+          )}
+        </section>
       </article>
     );
   }
@@ -1697,29 +1535,24 @@ export default function App() {
   if (!auth) {
     return (
       <div className="app-shell pro-shell">
-        <header className="top-header app-hero pro-hero">
+        <header className="top-header app-hero">
           <div className="hero-copy">{renderHeroCopy()}</div>
-
           <div className="hero-actions">
-            <span className="status-pill date-pill">{formatHeaderDateTime(currentDateTime)}</span>
+            <span className="status-pill">Internal Manual</span>
           </div>
         </header>
 
         <main className="login-modern-layout">
           <section className="product-panel">
-            <div className="product-kicker">Internal Operations Navigator</div>
-
-            <h2>迷わず進める、止まれる業務ナビ</h2>
-
+            <p className="product-kicker">For RSJP / RWJP Operations</p>
+            <h2>新人が迷わず動ける、業務ナビとしてのマニュアルAI</h2>
             <p className="product-lead">
-              RSJP業務マニュアルAIは、Notion上の業務マニュアルをもとに、回答・手順・チェックリスト・課長確認ポイントを整理します。
-              文字だけのマニュアルを、実際に作業できる形へ変換します。
+              Notionの業務マニュアルを検索し、回答、作業手順、チェックリスト、課長確認ゲートをまとめて表示します。
             </p>
 
             <div className="product-badge-row">
-              <span>Notion Connected</span>
+              <span>Notion API</span>
               <span>Manager Gate</span>
-              <span>Beginner Friendly</span>
               <span>Print Ready</span>
             </div>
 
@@ -1736,32 +1569,32 @@ export default function App() {
             </div>
 
             <div className="metric-row">
-              {LOGIN_STATS.map((item) => (
-                <div className="metric-card" key={item.label}>
-                  <p>{item.label}</p>
-                  <strong>{item.value}</strong>
-                </div>
+              {LOGIN_STATS.map((stat) => (
+                <article className="metric-card" key={stat.label}>
+                  <p>{stat.label}</p>
+                  <strong>{stat.value}</strong>
+                </article>
               ))}
             </div>
           </section>
 
-          <section className="login-stack">
+          <aside className="login-stack">
             <section className="login-panel pro-login-card">
               <div className="login-card-header">
                 <div>
-                  <p className="mini-label">Secure access</p>
                   <h2>ログイン</h2>
+                  <p className="meta">担当者用の確認画面です。</p>
                 </div>
-                <span className="login-card-status">Demo ready</span>
+                <span className="login-card-status">Secure</span>
               </div>
 
               <form onSubmit={login} className="question-form">
                 <label>
-                  メールアドレス
+                  メール
                   <input
+                    type="email"
                     value={email}
                     onChange={(event) => setEmail(event.target.value)}
-                    type="email"
                     placeholder="name@example.com"
                   />
                 </label>
@@ -1769,10 +1602,10 @@ export default function App() {
                 <label>
                   パスワード
                   <input
+                    type="password"
                     value={password}
                     onChange={(event) => setPassword(event.target.value)}
-                    type="password"
-                    placeholder="パスワードを入力"
+                    placeholder="••••••••"
                   />
                 </label>
 
@@ -1780,55 +1613,36 @@ export default function App() {
                   {isLoggingIn ? "ログイン中..." : "ログイン"}
                 </button>
 
-                <button className="demo-login-button" type="button" onClick={loginAsDemoUser}>
+                <button type="button" className="demo-login-button" onClick={loginAsDemoUser}>
                   デモユーザーでログイン
                 </button>
-
-                {error && <p className="error">{error}</p>}
               </form>
 
+              {error && <p className="error">{error}</p>}
+
               <p className="meta login-help-text">
-                認証API未設定時はローカル開発モードとしてログインできます。
+                認証Webhook未設定時は、ローカル開発用ログインとして動作します。
               </p>
             </section>
 
             <section className="next-action-card">
-              <div className="section-heading-row">
-                <div>
-                  <p className="mini-label">Onboarding checklist</p>
-                  <h2>次にやること</h2>
-                </div>
-                <span className="section-badge">初回確認</span>
-              </div>
-
-              <ol className="next-action-list">
+              <h2>このアプリでできること</h2>
+              <ul className="next-action-list">
                 <li>
                   <span>01</span>
-                  <p>デモユーザーでログインして画面の動きを確認します。</p>
+                  <p>業務マニュアルの該当箇所を確認する</p>
                 </li>
                 <li>
                   <span>02</span>
-                  <p>運用設定でQ&A API URLを確認します。</p>
+                  <p>新人向けの作業手順として整理する</p>
                 </li>
                 <li>
                   <span>03</span>
-                  <p>NotionナレッジDB URLを確認します。</p>
+                  <p>課長確認が必要な判断を明確にする</p>
                 </li>
-                <li>
-                  <span>04</span>
-                  <p>質問画面でテスト質問を送信します。</p>
-                </li>
-                <li>
-                  <span>05</span>
-                  <p>回答画面に課長確認ゲートが出るか確認します。</p>
-                </li>
-                <li>
-                  <span>06</span>
-                  <p>回答修正機能はRevision API設定後に確認します。</p>
-                </li>
-              </ol>
+              </ul>
             </section>
-          </section>
+          </aside>
         </main>
       </div>
     );
@@ -1836,67 +1650,56 @@ export default function App() {
 
   return (
     <div className="app-shell pro-shell">
-      <header className="top-header app-hero no-print pro-hero">
+      <header className="top-header app-hero no-print">
         <div className="hero-copy">{renderHeroCopy()}</div>
-
         <div className="hero-actions">
           <span className="status-pill date-pill">{formatHeaderDateTime(currentDateTime)}</span>
-          <span className="status-pill">Ready</span>
-          <button
-            type="button"
-            onClick={() => {
-              setAuth(null);
-              setPassword("");
-              setError(null);
-            }}
-          >
+          <button type="button" onClick={() => setAuth(null)}>
             ログアウト
           </button>
         </div>
       </header>
 
       <section className="dashboard-overview no-print">
-        <article className="overview-card">
-          <p className="mini-label">回答履歴</p>
-          <strong>{assistantMessageCount}</strong>
-          <span>件の回答を保存中</span>
-        </article>
-
-        <article className="overview-card">
-          <p className="mini-label">接続先</p>
-          <strong>{settings.qaWebhookUrl || "未設定"}</strong>
-          <span>Q&A API</span>
-        </article>
-
-        <article className="overview-card">
-          <p className="mini-label">安全装置</p>
-          <strong>Manager Gate</strong>
-          <span>課長確認ポイントを表示</span>
-        </article>
-
         <article className="overview-card overview-card-wide">
-          <p className="mini-label">直近の質問</p>
+          <span>Latest Question</span>
           <strong>{latestQuestionText}</strong>
-          <span>履歴をクリアするとリセットされます</span>
+        </article>
+        <article className="overview-card">
+          <span>Answers</span>
+          <strong>{assistantMessageCount}</strong>
+        </article>
+        <article className="overview-card">
+          <span>Latest Update</span>
+          <strong>
+            {latestAssistantMessage?.payload?.updatedAt
+              ? formatDateTime(latestAssistantMessage.payload.updatedAt)
+              : "未取得"}
+          </strong>
+        </article>
+        <article className="overview-card">
+          <span>User</span>
+          <strong>{auth.email}</strong>
         </article>
       </section>
 
-      <nav className="tab-row no-print pro-tab-row">
+      <nav className="tab-row pro-tab-row no-print">
         <button
+          type="button"
           className={activeTab === "chat" ? "active" : ""}
           onClick={() => setActiveTab("chat")}
         >
-          質問画面
+          質問
         </button>
-
         <button
+          type="button"
           className={activeTab === "ops" ? "active" : ""}
           onClick={() => setActiveTab("ops")}
         >
           運用設定
         </button>
-
         <button
+          type="button"
           className={activeTab === "guide" ? "active" : ""}
           onClick={() => setActiveTab("guide")}
         >
@@ -1905,70 +1708,45 @@ export default function App() {
       </nav>
 
       {activeTab === "chat" && (
-        <section className="chat-layout pro-chat-layout">
-          <aside className="left-panel no-print pro-side-panel">
-            <form onSubmit={submitQuestion} className="question-form">
-              <div className="side-panel-header">
-                <div>
-                  <p className="mini-label">Ask manual AI</p>
-                  <h2>質問する</h2>
-                </div>
-                <span className="section-badge">Notion検索</span>
+        <main className="chat-layout pro-chat-layout">
+          <aside className="left-panel pro-side-panel no-print">
+            <div className="side-panel-header">
+              <div>
+                <h2>質問する</h2>
+                <p className="meta">Main Manual Databaseの内容に基づいて回答します。</p>
               </div>
+            </div>
 
-              <label htmlFor="question">質問</label>
+            <form onSubmit={submitQuestion} className="question-form">
+              <label>
+                質問
+                <textarea
+                  value={question}
+                  onChange={(event) => setQuestion(event.target.value)}
+                  rows={8}
+                  placeholder="例：大型バスの発注方法を、見積依頼から請求書処理まで順番に教えてください。"
+                />
+              </label>
 
-              <textarea
-                id="question"
-                value={question}
-                onChange={(event) => setQuestion(event.target.value)}
-                placeholder="例）大型バスの発注方法を、見積依頼から請求書処理まで順番に教えてください。"
-                rows={6}
-              />
-
-              <button
-                type="submit"
-                className="primary"
-                disabled={isLoading || question.trim().length === 0}
-              >
-                {isLoading ? "生成中..." : "回答を生成"}
+              <button className="primary" type="submit" disabled={isLoading}>
+                {isLoading ? "検索・回答生成中..." : "質問する"}
               </button>
-
-              {isLoading && (
-                <div className="side-loading-note">
-                  <span className="mini-spinner" />
-                  <span>生成中です。回答欄に進行表示が出ています。</span>
-                </div>
-              )}
-
-              <p className="meta">
-                現在の送信先: <strong>{settings.qaWebhookUrl || "未設定"}</strong>
-              </p>
-
-              {shouldUseLocalMock(settings.qaWebhookUrl) && (
-                <p className="meta">
-                  開発画面では /api/ask をローカル確認用モックとして動かします。
-                </p>
-              )}
-
-              <button type="button" onClick={clearMessages}>
-                履歴をクリア
-              </button>
-
-              {error && <p className="error">{error}</p>}
             </form>
 
-            <section className="quick-question-panel">
-              <p className="mini-label">Sample prompts</p>
-              <h2>よく使う質問</h2>
+            {isLoading && (
+              <div className="side-loading-note">
+                <span className="mini-spinner" />
+                Main Manual Databaseを確認中です。
+              </div>
+            )}
 
+            {error && <p className="error">{error}</p>}
+
+            <section className="quick-question-panel">
+              <h2>サンプル質問</h2>
               <div className="quick-question-list">
                 {QUICK_SAMPLE_QUESTIONS.map((sample) => (
-                  <button
-                    type="button"
-                    key={sample}
-                    onClick={() => applySampleQuestion(sample)}
-                  >
+                  <button type="button" key={sample} onClick={() => applySampleQuestion(sample)}>
                     {sample}
                   </button>
                 ))}
@@ -1976,135 +1754,99 @@ export default function App() {
             </section>
 
             <section className="revision-panel pro-revision-panel">
-              <h2>回答修正（Notion DBへ直接追記）</h2>
-              <p>
-                最新回答を編集し、修正履歴をNotion Revision DBに保存します。
-              </p>
-
-              <button
-                type="button"
-                onClick={() => {
-                  if (!latestAssistantMessage?.payload) return;
-
-                  setEditTargetId(latestAssistantMessage.id);
-                  setEditedAnswer(latestAssistantMessage.payload.answer);
-                }}
-                disabled={!latestAssistantMessage?.payload}
-              >
-                最新回答を編集
-              </button>
-
-              {editTargetId && (
-                <div className="edit-box">
-                  <textarea
-                    rows={6}
-                    value={editedAnswer}
-                    onChange={(event) => setEditedAnswer(event.target.value)}
-                  />
-
-                  <div className="edit-actions">
-                    <button
-                      type="button"
-                      className="primary"
-                      onClick={() => void saveRevision()}
-                    >
-                      修正を保存
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setEditTargetId(null);
-                        setEditedAnswer("");
-                      }}
-                    >
-                      キャンセル
-                    </button>
-                  </div>
-                </div>
+              <h2>回答修正履歴</h2>
+              {revisions.length === 0 ? (
+                <p className="meta">まだ修正履歴はありません。</p>
+              ) : (
+                <ol className="compact-list">
+                  {revisions.slice(0, 5).map((revision) => (
+                    <li key={revision.id}>
+                      {formatDateTime(revision.revisedAt)} / {revision.question}
+                    </li>
+                  ))}
+                </ol>
               )}
             </section>
           </aside>
 
-          <main className="timeline print-area pro-timeline">
-            {messages.length === 0 && (
-              <div className="empty-state pro-empty-state">
-                <p className="mini-label">Ready to start</p>
-                <h2>まずは業務を1つ質問してください</h2>
-                <p>
-                  質問すると、回答・課長確認ゲート・手順・チェックリストをまとめて表示します。
-                </p>
+          <section className="timeline pro-timeline">
+            {isLoading && renderLoadingCard()}
 
-                <div className="empty-sample-grid no-print">
-                  {QUICK_SAMPLE_QUESTIONS.slice(0, 2).map((sample) => (
-                    <button
-                      type="button"
-                      key={sample}
-                      onClick={() => applySampleQuestion(sample)}
-                    >
+            {messages.length === 0 && !isLoading ? (
+              <div className="empty-state pro-empty-state">
+                <h2>まだ質問はありません</h2>
+                <p>
+                  左の入力欄から業務に関する質問を入力してください。回答・手順・チェックリスト・課長確認ゲートをまとめて表示します。
+                </p>
+                <div className="empty-sample-grid">
+                  {QUICK_SAMPLE_QUESTIONS.map((sample) => (
+                    <button type="button" key={sample} onClick={() => applySampleQuestion(sample)}>
                       {sample}
                     </button>
                   ))}
                 </div>
               </div>
+            ) : (
+              messages.map((message) => {
+                if (message.role === "user") {
+                  return (
+                    <div className="bubble user no-print" key={message.id}>
+                      <p className="bubble-label">質問 / {formatDateTime(message.createdAt)}</p>
+                      <p className="question-text">{message.rawText}</p>
+                    </div>
+                  );
+                }
+
+                return (
+                  <div className="bubble assistant" key={message.id}>
+                    {renderAssistant(message)}
+                  </div>
+                );
+              })
             )}
-
-            {messages.map((message) => (
-              <div className={`bubble ${message.role}`} key={message.id}>
-                <p className="bubble-label">
-                  {message.role === "user" ? "質問" : "回答"} /{" "}
-                  {formatDateTime(message.createdAt)}
-                </p>
-
-                {message.role === "user" ? (
-                  <p className="question-text">{message.rawText}</p>
-                ) : (
-                  message.payload && renderAssistant(message.id, message.payload)
-                )}
-              </div>
-            ))}
-          </main>
-        </section>
+          </section>
+        </main>
       )}
 
       {activeTab === "ops" && (
-        <section className="ops-panel pro-ops-panel">
-          <div className="side-panel-header">
-            <div>
-              <p className="mini-label">System settings</p>
-              <h2>運用設定</h2>
-            </div>
-            <span className="section-badge">管理者向け</span>
-          </div>
-
-          <label>
-            認証 API URL（メール/パスワード認証）
-            <input
-              value={settings.authWebhookUrl}
-              onChange={(event) =>
-                persistSettings({
-                  ...settings,
-                  authWebhookUrl: event.target.value,
-                })
-              }
-            />
-          </label>
+        <section className="ops-panel">
+          <h2>運用設定</h2>
+          <p className="meta">
+            まずは /api/ask を使う設定にしています。Notion DBとOpenAI APIはVercel Functions側で接続します。
+          </p>
 
           <label>
             Q&A API URL
             <input
               value={settings.qaWebhookUrl}
               onChange={(event) =>
-                persistSettings({
-                  ...settings,
-                  qaWebhookUrl: event.target.value,
-                })
+                persistSettings({ ...settings, qaWebhookUrl: event.target.value })
               }
             />
           </label>
 
           <label>
-            Notion Revision追記 API URL
+            認証Webhook URL
+            <input
+              value={settings.authWebhookUrl}
+              onChange={(event) =>
+                persistSettings({ ...settings, authWebhookUrl: event.target.value })
+              }
+            />
+          </label>
+
+          <label>
+            NotionマニュアルDB URL
+            <input
+              value={settings.notionDatabaseUrl}
+              onChange={(event) =>
+                persistSettings({ ...settings, notionDatabaseUrl: event.target.value })
+              }
+            />
+          </label>
+
+          <label>
+            回答修正送信用Webhook URL
             <input
               value={settings.revisionNotionWebhookUrl}
               onChange={(event) =>
@@ -2115,47 +1857,6 @@ export default function App() {
               }
             />
           </label>
-
-          <label>
-            NotionナレッジDB URL
-            <input
-              value={settings.notionDatabaseUrl}
-              onChange={(event) =>
-                persistSettings({
-                  ...settings,
-                  notionDatabaseUrl: event.target.value,
-                })
-              }
-            />
-          </label>
-
-          <label>
-            Notion Revision DB ID
-            <input
-              value={settings.notionRevisionDatabaseId}
-              onChange={(event) =>
-                persistSettings({
-                  ...settings,
-                  notionRevisionDatabaseId: event.target.value,
-                })
-              }
-            />
-          </label>
-
-          {ENABLE_IMAGE_GENERATION && (
-            <label>
-              画像モデル（ChatGPT API）
-              <input
-                value={settings.imageModel}
-                onChange={(event) =>
-                  persistSettings({
-                    ...settings,
-                    imageModel: event.target.value,
-                  })
-                }
-              />
-            </label>
-          )}
 
           <label className="inline">
             <input
@@ -2168,42 +1869,28 @@ export default function App() {
                 })
               }
             />
-            更新日が新しいページを優先採用する
+            同名ページがある場合は最新更新版を優先する
           </label>
 
-          <h3>修正履歴（直近10件）</h3>
-
-          <ul className="revision-list">
-            {revisions.slice(0, 10).map((item) => (
-              <li key={item.id}>
-                <strong>{formatDateTime(item.revisedAt)}</strong>
-                <p>Q: {item.question}</p>
-                <p>修正: {item.revisedAnswer}</p>
-              </li>
-            ))}
-
-            {revisions.length === 0 && <li>履歴なし</li>}
-          </ul>
+          <button type="button" onClick={clearMessages}>
+            回答履歴をクリア
+          </button>
         </section>
       )}
 
       {activeTab === "guide" && (
-        <section className="guide-panel pro-guide-panel">
-          <div className="side-panel-header">
-            <div>
-              <p className="mini-label">Beginner guide</p>
-              <h2>使い方（新人向け）</h2>
-            </div>
-            <span className="section-badge">初回説明用</span>
-          </div>
+        <section className="guide-panel">
+          <h2>使い方</h2>
+          <p>
+            RSJP業務マニュアルAIは、Notion上のマニュアルを参照し、新人職員が動きやすい形に整理するための補助ツールです。
+          </p>
 
+          <h3>基本の流れ</h3>
           <ol>
-            <li>メール/パスワードでログインします。</li>
-            <li>「質問画面」で業務内容を1つだけ入力します。</li>
-            <li>回答を読み、まず「課長確認ゲート」で自分で進めてよい範囲を確認します。</li>
-            <li>先方へ送る前、金額・日程・受入可否を確定する前は、必要に応じて課長確認をします。</li>
-            <li>回答に表示された「手順」を上から順番に実施します。</li>
-            <li>作業後に「チェックリスト」で抜け漏れを確認します。</li>
+            <li>質問画面で、業務について具体的に質問します。</li>
+            <li>AIがMain Manual Databaseを検索します。</li>
+            <li>回答、手順、チェックリスト、課長確認ゲートを確認します。</li>
+            <li>必要に応じて印刷し、新人説明や引き継ぎ資料として使います。</li>
             <li>必要に応じて回答修正を保存し、Notion Revision DBへ反映します。</li>
           </ol>
 
