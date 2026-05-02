@@ -282,9 +282,11 @@ declare const process: {
         rich_text: makeRichText(params.originalAnswer),
       },
       Status: {
-        select: {
-          name: params.status,
-        },
+        multi_select: [
+          {
+            name: params.status,
+          },
+        ],
       },
       Approved: {
         checkbox: params.approved,
