@@ -216,6 +216,10 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+function sleep(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
 function makeId() {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
     return crypto.randomUUID();
@@ -745,7 +749,7 @@ function buildAskRequest(
 }
 
 async function localAskMock(requestBody: AskRequestPayload): Promise<AnswerPayload> {
-  await new Promise((resolve) => window.setTimeout(resolve, 500));
+  await sleep(500);
 
   return {
     answer: `これは自前APIへ移行するためのローカル確認用テスト回答です。
@@ -978,20 +982,33 @@ function renderWorkflowStrip() {
     </div>
   );
 }
-function clearMessages() {
-  if (messages.length > 0) {
-    const ok = window.confirm("過去の質問・回答履歴を削除しますか？");
 
-    if (!ok) return;
-  }
+function renderLoadingCard() {
+  return (
+    <div className="loading-card pro-loading-card no-print" aria-live="polite">
+      <div className="loading-header">
+        <span className="loading-spinner" aria-hidden="true" />
 
-  persistMessages([]);
-  setError(null);
-  setEditTargetId(null);
-  setEditedAnswer("");
-  setImageErrors({});
-  setImageLoadingIds({});
-  setGeneratedImageUrls({});
+        <div>
+          <p className="loading-title">Main Manual Databaseを確認しています</p>
+          <p className="loading-subtitle">
+            関連ページを検索し、根拠に基づいて回答を整理しています。
+          </p>
+        </div>
+      </div>
+
+      <div className="loading-progress" aria-hidden="true">
+        <span />
+      </div>
+
+      <div className="loading-steps">
+        <span>質問解析</span>
+        <span>Notion検索</span>
+        <span>根拠確認</span>
+        <span>回答生成</span>
+      </div>
+    </div>
+  );
 }
 
 function renderManagerGate(managerGate?: ManagerGate) {
@@ -1111,6 +1128,12 @@ export default function App() {
   }
 
   function clearMessages() {
+    if (messages.length > 0) {
+      const ok = window.confirm("過去の質問・回答履歴を削除しますか？");
+
+      if (!ok) return;
+    }
+
     persistMessages([]);
     setError(null);
     setEditTargetId(null);
@@ -1196,6 +1219,8 @@ export default function App() {
       return;
     }
 
+    const currentMessages = messages;
+
     const userMessage: ChatMessage = {
       id: makeId(),
       role: "user",
@@ -1206,7 +1231,7 @@ export default function App() {
     setError(null);
     setQuestion("");
     setIsLoading(true);
-    persistMessages([userMessage, ...messages]);
+    persistMessages([userMessage, ...currentMessages]);
 
     const requestBody = buildAskRequest(trimmedQuestion, auth, settings);
 
@@ -1242,11 +1267,12 @@ export default function App() {
         createdAt: nowIso(),
       };
 
-      persistMessages([assistantMessage, userMessage, ...messages]);
+      persistMessages([assistantMessage, userMessage, ...currentMessages]);
     } catch (err) {
       setError(err instanceof Error ? err.message : "回答取得中にエラーが発生しました。");
-      persistMessages(messages);
+      persistMessages(currentMessages);
     } finally {
+      await sleep(1200);
       setIsLoading(false);
     }
   }
@@ -1594,14 +1620,14 @@ export default function App() {
                   />
                 </label>
 
-                <button className="primary" type="submit" disabled={isLoading}>
-                {isLoading ? "検索・回答生成中..." : "質問する"}
-              </button>
+                <button className="primary" type="submit" disabled={isLoggingIn}>
+                  {isLoggingIn ? "ログイン中..." : "ログイン"}
+                </button>
 
-              <button type="button" onClick={clearMessages} disabled={isLoading || messages.length === 0}>
-                過去の質問履歴を削除
-              </button>
-            </form>
+                <button type="button" className="demo-login-button" onClick={loginAsDemoUser}>
+                  デモユーザーでログイン
+                </button>
+              </form>
 
               {error && <p className="error">{error}</p>}
 
@@ -1715,6 +1741,10 @@ export default function App() {
 
               <button className="primary" type="submit" disabled={isLoading}>
                 {isLoading ? "検索・回答生成中..." : "質問する"}
+              </button>
+
+              <button type="button" onClick={clearMessages} disabled={isLoading || messages.length === 0}>
+                過去の質問履歴を削除
               </button>
             </form>
 
