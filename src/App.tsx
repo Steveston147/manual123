@@ -978,35 +978,20 @@ function renderWorkflowStrip() {
     </div>
   );
 }
+function clearMessages() {
+  if (messages.length > 0) {
+    const ok = window.confirm("過去の質問・回答履歴を削除しますか？");
 
-function renderLoadingCard() {
-  return (
-    <div className="loading-card pro-loading-card no-print">
-      <div className="loading-header">
-        <div className="search-orbit" aria-hidden="true">
-          <span className="search-orbit-core" />
-        </div>
+    if (!ok) return;
+  }
 
-        <div>
-          <p className="loading-title">Main Manual Databaseを確認しています</p>
-          <p className="loading-subtitle">
-            関連ページを検索し、根拠に基づいて回答を整理しています。
-          </p>
-        </div>
-      </div>
-
-      <div className="search-runway" aria-hidden="true">
-        <span className="search-runner" />
-      </div>
-
-      <div className="loading-steps">
-        <span>質問解析</span>
-        <span>Notion検索</span>
-        <span>根拠確認</span>
-        <span>回答生成</span>
-      </div>
-    </div>
-  );
+  persistMessages([]);
+  setError(null);
+  setEditTargetId(null);
+  setEditedAnswer("");
+  setImageErrors({});
+  setImageLoadingIds({});
+  setGeneratedImageUrls({});
 }
 
 function renderManagerGate(managerGate?: ManagerGate) {
@@ -1609,14 +1594,14 @@ export default function App() {
                   />
                 </label>
 
-                <button className="primary" type="submit" disabled={isLoggingIn}>
-                  {isLoggingIn ? "ログイン中..." : "ログイン"}
-                </button>
+                <button className="primary" type="submit" disabled={isLoading}>
+                {isLoading ? "検索・回答生成中..." : "質問する"}
+              </button>
 
-                <button type="button" className="demo-login-button" onClick={loginAsDemoUser}>
-                  デモユーザーでログイン
-                </button>
-              </form>
+              <button type="button" onClick={clearMessages} disabled={isLoading || messages.length === 0}>
+                過去の質問履歴を削除
+              </button>
+            </form>
 
               {error && <p className="error">{error}</p>}
 
