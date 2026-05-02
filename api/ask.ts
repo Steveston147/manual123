@@ -136,23 +136,23 @@ type SearchDocument = {
 
 const NOTION_VERSION = "2022-06-28";
 
-const MAX_DATABASE_RECENT_PAGES_PER_DB = 12;
-const MAX_DATABASE_TARGETED_PAGES_PER_DB = 24;
-const MAX_DATABASE_PAGES_PER_DB = 36;
-const MAX_SEARCH_PAGES = 8;
+const MAX_DATABASE_SCAN_PAGES_PER_DB = 80;
+const MAX_DATABASE_TARGETED_PAGES_PER_DB = 80;
+const MAX_DATABASE_TOTAL_PAGES_PER_DB = 120;
+const MAX_SEARCH_PAGES = 10;
 const MAX_ROOT_PAGES = 2;
-const MAX_SELECTED_DOCS = 6;
-const MAX_SEEDS_TO_ENRICH = 8;
-const MAX_BLOCKS_PER_PAGE = 45;
-const MAX_CHILD_BLOCKS_PER_PARENT = 12;
-const MAX_CONTEXT_CHARS_PER_DOC = 1700;
+const MAX_SELECTED_DOCS = 7;
+const MAX_SEEDS_TO_ENRICH = 14;
+const MAX_BLOCKS_PER_PAGE = 55;
+const MAX_CHILD_BLOCKS_PER_PARENT = 16;
+const MAX_CONTEXT_CHARS_PER_DOC = 1800;
 const MAX_OUTPUT_TOKENS = 1700;
 
 const MIN_CONFIDENT_SCORE = 45;
-const MIN_DIRECT_ANSWER_SCORE = 80;
-const MIN_SEARCH_API_SCORE_WHEN_DATABASE_HIT_EXISTS = 80;
+const MIN_DIRECT_ANSWER_SCORE = 70;
+const MIN_SEARCH_API_SCORE_WHEN_DATABASE_HIT_EXISTS = 120;
 
-const NOTION_TIMEOUT_MS = 7000;
+const NOTION_TIMEOUT_MS = 10000;
 const OPENAI_TIMEOUT_MS = 18000;
 
 const QUESTION_PROPERTY_NAMES = [
@@ -376,8 +376,9 @@ async function searchKnowledge(question: string): Promise<{
   }
 
   const searchTerms = createSearchTerms(question);
-  debug.searchTerms = searchTerms;
-  debug.searchQueries = createSearchQueries(question, searchTerms);
+  const anchorTerms = extractAnchorTerms(question);
+  debug.searchTerms = Array.from(new Set([...searchTerms, ...anchorTerms]));
+  debug.searchQueries = createSearchQueries(question, debug.searchTerms);
 
   const databaseSources: SourceConfig[] = [
     {
@@ -424,12 +425,12 @@ async function searchKnowledge(question: string): Promise<{
     }
 
     try {
-      const pages = await queryDatabasePages(source.id, question, searchTerms);
+      const pages = await queryDatabasePages(source.id, question, debug.searchTerms);
       debug.databasePageCount += pages.length;
       debug.sourceCounts[source.name] = pages.length;
 
       for (const page of pages) {
-        seedDocuments.push(pageToDocument(page, source, question, searchTerms));
+        seedDocuments.push(pageToDocument(page, source, question, debug.searchTerms));
       }
     } catch (error) {
       debug.errors.push(`${source.envName}: ${getErrorMessage(error)}`);
@@ -450,7 +451,7 @@ async function searchKnowledge(question: string): Promise<{
       };
 
       for (const page of pages) {
-        seedDocuments.push(pageToDocument(page, source, question, searchTerms));
+        seedDocuments.push(pageToDocument(page, source, question, debug.searchTerms));
       }
     })
     .catch((error) => {
@@ -467,7 +468,7 @@ async function searchKnowledge(question: string): Promise<{
     try {
       const page = await getPage(source.id);
       debug.sourceCounts[source.name] = 1;
-      seedDocuments.push(pageToDocument(page, source, question, searchTerms));
+      seedDocuments.push(pageToDocument(page, source, question, debug.searchTerms));
     } catch (error) {
       debug.errors.push(`${source.envName}: ${getErrorMessage(error)}`);
       debug.sourceCounts[source.name] = 0;
@@ -479,7 +480,7 @@ async function searchKnowledge(question: string): Promise<{
   const dedupedSeeds = dedupeDocuments(seedDocuments)
     .map((doc) => ({
       ...doc,
-      score: scoreDocument(doc, question, searchTerms),
+      score: scoreDocument(doc, question, debug.searchTerms),
     }))
     .sort(sortDocumentsByRelevance);
 
@@ -489,7 +490,10 @@ async function searchKnowledge(question: string): Promise<{
     topSeeds.map(async (doc) => {
       try {
         const blockText = await readPageBlockText(doc.id);
-        const text = [doc.propertyText, blockText].filter(Boolean).join("\n\n").trim();
+        const text = [doc.text, blockText ? `BlockContent: ${blockText}` : ""]
+          .filter(Boolean)
+          .join("\n\n")
+          .trim();
 
         const enriched: SearchDocument = {
           ...doc,
@@ -497,7 +501,7 @@ async function searchKnowledge(question: string): Promise<{
           text: text || doc.text,
         };
 
-        enriched.score = scoreDocument(enriched, question, searchTerms);
+        enriched.score = scoreDocument(enriched, question, debug.searchTerms);
         return enriched;
       } catch (error) {
         debug.errors.push(`${doc.title}: ${getErrorMessage(error)}`);
@@ -509,11 +513,11 @@ async function searchKnowledge(question: string): Promise<{
   const rankedDocuments = enrichedDocuments
     .map((doc) => ({
       ...doc,
-      score: scoreDocument(doc, question, searchTerms),
+      score: scoreDocument(doc, question, debug.searchTerms),
     }))
     .sort(sortDocumentsByRelevance);
 
-  const finalDocuments = selectFinalDocuments(rankedDocuments);
+  const finalDocuments = selectFinalDocuments(rankedDocuments, question);
 
   debug.discoveredPageCount = dedupedSeeds.length;
   debug.selectedPageCount = finalDocuments.length;
@@ -527,7 +531,7 @@ async function searchKnowledge(question: string): Promise<{
     contentPreview: createPreview(doc.text),
     sourceName: doc.sourceName,
     sourceType: doc.sourceType,
-    matchReason: createMatchReason(doc, question, searchTerms),
+    matchReason: createMatchReason(doc, question, debug.searchTerms),
   }));
 
   return {
@@ -557,31 +561,50 @@ async function queryDatabasePages(
   question: string,
   searchTerms: string[]
 ): Promise<NotionPage[]> {
-  const recentTask = queryDatabaseRecentPages(databaseId);
   const targetedTask = queryDatabaseTargetedPages(databaseId, question, searchTerms);
+  const scanTask = queryDatabaseScanPages(databaseId);
 
-  const [recentPages, targetedPages] = await Promise.all([recentTask, targetedTask]);
+  const [targetedPages, scanPages] = await Promise.all([targetedTask, scanTask]);
 
-  return dedupeNotionPages([...targetedPages, ...recentPages]).slice(0, MAX_DATABASE_PAGES_PER_DB);
+  return dedupeNotionPages([...targetedPages, ...scanPages]).slice(0, MAX_DATABASE_TOTAL_PAGES_PER_DB);
 }
 
-async function queryDatabaseRecentPages(databaseId: string): Promise<NotionPage[]> {
-  const response = await notionFetch<NotionListResponse>(
-    `/databases/${cleanNotionId(databaseId)}/query`,
-    "POST",
-    {
-      page_size: MAX_DATABASE_RECENT_PAGES_PER_DB,
+async function queryDatabaseScanPages(databaseId: string): Promise<NotionPage[]> {
+  const pages: NotionPage[] = [];
+  let cursor: string | null | undefined = undefined;
+
+  while (pages.length < MAX_DATABASE_SCAN_PAGES_PER_DB) {
+    const body: Record<string, unknown> = {
+      page_size: Math.min(100, MAX_DATABASE_SCAN_PAGES_PER_DB - pages.length),
       sorts: [
         {
           timestamp: "last_edited_time",
           direction: "descending",
         },
       ],
-    }
-  );
+    };
 
-  const results = Array.isArray(response.results) ? response.results : [];
-  return results.filter(isNotionPage).slice(0, MAX_DATABASE_RECENT_PAGES_PER_DB);
+    if (cursor) {
+      body.start_cursor = cursor;
+    }
+
+    const response = await notionFetch<NotionListResponse>(
+      `/databases/${cleanNotionId(databaseId)}/query`,
+      "POST",
+      body
+    );
+
+    const results = Array.isArray(response.results) ? response.results : [];
+    pages.push(...results.filter(isNotionPage));
+
+    if (!response.has_more || !response.next_cursor) {
+      break;
+    }
+
+    cursor = response.next_cursor;
+  }
+
+  return pages.slice(0, MAX_DATABASE_SCAN_PAGES_PER_DB);
 }
 
 async function queryDatabaseTargetedPages(
@@ -597,11 +620,12 @@ async function queryDatabaseTargetedPages(
       return [];
     }
 
-    const response = await notionFetch<NotionListResponse>(
-      `/databases/${cleanNotionId(databaseId)}/query`,
-      "POST",
-      {
-        page_size: MAX_DATABASE_TARGETED_PAGES_PER_DB,
+    const pages: NotionPage[] = [];
+    let cursor: string | null | undefined = undefined;
+
+    while (pages.length < MAX_DATABASE_TARGETED_PAGES_PER_DB) {
+      const body: Record<string, unknown> = {
+        page_size: Math.min(100, MAX_DATABASE_TARGETED_PAGES_PER_DB - pages.length),
         filter,
         sorts: [
           {
@@ -609,11 +633,29 @@ async function queryDatabaseTargetedPages(
             direction: "descending",
           },
         ],
-      }
-    );
+      };
 
-    const results = Array.isArray(response.results) ? response.results : [];
-    return results.filter(isNotionPage).slice(0, MAX_DATABASE_TARGETED_PAGES_PER_DB);
+      if (cursor) {
+        body.start_cursor = cursor;
+      }
+
+      const response = await notionFetch<NotionListResponse>(
+        `/databases/${cleanNotionId(databaseId)}/query`,
+        "POST",
+        body
+      );
+
+      const results = Array.isArray(response.results) ? response.results : [];
+      pages.push(...results.filter(isNotionPage));
+
+      if (!response.has_more || !response.next_cursor) {
+        break;
+      }
+
+      cursor = response.next_cursor;
+    }
+
+    return pages.slice(0, MAX_DATABASE_TARGETED_PAGES_PER_DB);
   } catch {
     return [];
   }
@@ -635,7 +677,7 @@ function buildDatabaseSearchFilter(
       const bScore = getPropertySearchPriority(bName, bSchema?.type);
       return bScore - aScore;
     })
-    .slice(0, 10);
+    .slice(0, 12);
 
   if (searchableProperties.length === 0) {
     return null;
@@ -662,7 +704,7 @@ function buildDatabaseSearchFilter(
   }
 
   return {
-    or: filters.slice(0, 80),
+    or: filters.slice(0, 95),
   };
 }
 
@@ -687,26 +729,26 @@ function getPropertySearchPriority(name: string, type: string | undefined): numb
   }
 
   if (QUESTION_PROPERTY_NAMES.some((item) => normalizePropertyName(item) === normalizedName)) {
-    return 95;
+    return 98;
   }
 
   if (ANSWER_PROPERTY_NAMES.some((item) => normalizePropertyName(item) === normalizedName)) {
-    return 80;
+    return 88;
   }
 
   if (KEYWORD_PROPERTY_NAMES.some((item) => normalizePropertyName(item) === normalizedName)) {
-    return 70;
-  }
-
-  if (CATEGORY_PROPERTY_NAMES.some((item) => normalizePropertyName(item) === normalizedName)) {
-    return 55;
+    return 78;
   }
 
   if (PROGRAM_PROPERTY_NAMES.some((item) => normalizePropertyName(item) === normalizedName)) {
-    return 55;
+    return 65;
   }
 
-  return 20;
+  if (CATEGORY_PROPERTY_NAMES.some((item) => normalizePropertyName(item) === normalizedName)) {
+    return 62;
+  }
+
+  return 25;
 }
 
 function createNotionPropertyFilter(
@@ -797,6 +839,7 @@ function createDatabaseFilterTerms(question: string, searchTerms: string[]): str
   const candidates = [
     question,
     stripQuestionSuffix(question),
+    ...extractAnchorTerms(question),
     ...searchTerms,
   ];
 
@@ -807,7 +850,7 @@ function createDatabaseFilterTerms(question: string, searchTerms: string[]): str
         .filter((item) => item.length >= 2)
         .filter((item) => !isWeakSearchTerm(item))
     )
-  ).slice(0, 8);
+  ).slice(0, 10);
 }
 
 async function searchNotionPages(question: string): Promise<NotionPage[]> {
@@ -848,7 +891,7 @@ async function readPageBlockText(pageId: string): Promise<string> {
       lines.push(text);
     }
 
-    if (block.has_children && lines.join("\n").length < 2400) {
+    if (block.has_children && lines.join("\n").length < 2800) {
       try {
         const childResponse = await notionFetch<NotionListResponse>(
           `/blocks/${cleanNotionId(block.id)}/children?page_size=${MAX_CHILD_BLOCKS_PER_PARENT}`,
@@ -944,6 +987,21 @@ function getPageTitle(page: NotionPage): string {
     }
   }
 
+  const fallbackCandidates = [
+    properties.Name,
+    properties.name,
+    properties.Title,
+    properties.title,
+    properties.名前,
+  ];
+
+  for (const candidate of fallbackCandidates) {
+    const value = getPropertyValueText(candidate);
+    if (value) {
+      return value;
+    }
+  }
+
   return "Untitled";
 }
 
@@ -980,7 +1038,27 @@ function getPropertyTextByNames(
 }
 
 function getPropertyValueText(property: NotionProperty | undefined): string {
-  if (!property || !property.type) {
+  if (!property) {
+    return "";
+  }
+
+  if (!property.type) {
+    if (typeof property.plain_text === "string") {
+      return property.plain_text.trim();
+    }
+
+    if (typeof property.text === "string") {
+      return property.text.trim();
+    }
+
+    if (Array.isArray(property.title)) {
+      return richTextToPlain(property.title);
+    }
+
+    if (Array.isArray(property.rich_text)) {
+      return richTextToPlain(property.rich_text);
+    }
+
     return "";
   }
 
@@ -1060,6 +1138,12 @@ function getPropertyValueText(property: NotionProperty | undefined): string {
 
   if (type === "rollup") {
     return getRollupText(property.rollup);
+  }
+
+  if (type === "unique_id") {
+    const prefix = property.unique_id?.prefix || "";
+    const number = property.unique_id?.number ?? "";
+    return [prefix, number].filter(Boolean).join("-");
   }
 
   return "";
@@ -1147,6 +1231,16 @@ function getBlockPlainText(block: NotionBlock): string {
     return richTextToPlain(value.rich_text);
   }
 
+  if (type === "quote") {
+    const text = richTextToPlain(value.rich_text);
+    return text ? `引用: ${text}` : "";
+  }
+
+  if (type === "callout") {
+    const text = richTextToPlain(value.rich_text);
+    return text ? `注記: ${text}` : "";
+  }
+
   return richTextToPlain(value.rich_text);
 }
 
@@ -1219,7 +1313,7 @@ async function buildAnswer(
     "Notionの参照情報に基づいて、日本語で実務的に回答してください。",
     "外部知識、一般知識、推測、連想で不足情報を補ってはいけません。",
     "Notion参照情報に明記されていない学校名、団体名、住所、電話番号、URL、担当部署名、制度名、料金、日付を作ってはいけません。",
-    "このアプリ内で OIC と書かれている場合は、立命館大学大阪いばらきキャンパスの文脈として扱います。ただし、Notion参照情報に明記されていない住所・電話番号・外部団体名は出力しないでください。",
+    "略称や固有語は、Notion参照情報の文脈だけで扱ってください。外部の学校名や別組織に置き換えてはいけません。",
     "Reference 1 は最も重要な参照元です。まずReference 1を優先してください。",
     "Question欄とAnswer欄に明記されている内容を最優先してください。",
     "Answer欄がある場合は、Answer欄の内容を中心に回答し、勝手に補足しないでください。",
@@ -1242,7 +1336,7 @@ async function buildAnswer(
     "- Notionに明記されているAnswer欄の内容は、勝手に省略・否定しない。",
     "- 参照元がQuestion/Answer形式の場合は、そのAnswerを中心に回答する。",
     "- Notionに書かれていない学校名、住所、電話番号、URL、担当部署、料金、日付は絶対に追加しない。",
-    "- OICを外部の学校名として解釈しない。OICは立命館大学大阪いばらきキャンパスの文脈として扱う。",
+    "- 略称や固有語を外部知識で補完しない。",
     "- 不足情報がある場合は、補完せず『Notionでは確認できません』と書く。",
     "- steps は、新人が順番に進められる手順にする。",
     "- checklist は、作業前後の確認項目にする。",
@@ -1330,7 +1424,7 @@ function createDirectAnswerPayloadIfReliable(
     return null;
   }
 
-  const answerText = normalizeString(topDocument.answerText);
+  const answerText = extractDirectAnswerText(topDocument);
 
   if (!answerText || answerText.length < 8) {
     return null;
@@ -1348,9 +1442,9 @@ function createDirectAnswerPayloadIfReliable(
     answer,
     managerGate: createSafeManagerGateForDirectAnswer(topDocument),
     steps: [
-      "まずNotionのAnswer欄の内容を確認する",
-      "今回の質問・参加者・プログラムにそのまま当てはまるか確認する",
-      "先方へ案内する場合は、Notionに記載のない情報を追加しない",
+      "採用されたNotionページのQuestion欄とAnswer欄を確認する",
+      "Answer欄の内容をもとに案内する",
+      "Notionに記載のない情報を追加しない",
       "例外対応、費用、安全面、契約判断が関係する場合は課長確認を行う",
     ],
     checklist: [
@@ -1369,6 +1463,21 @@ function createDirectAnswerPayloadIfReliable(
       search: debug,
     },
   };
+}
+
+function extractDirectAnswerText(document: SearchDocument): string {
+  const answerText = normalizeString(document.answerText);
+
+  if (answerText) {
+    return answerText;
+  }
+
+  const match = document.text.match(/Answer:\s*([\s\S]*?)(?:\n(?:Keyword|Category|Program|Status|Question):|$)/i);
+  if (match && match[1]) {
+    return match[1].trim();
+  }
+
+  return "";
 }
 
 function createSafeManagerGateForDirectAnswer(document: SearchDocument): ManagerGate {
@@ -1809,7 +1918,7 @@ function createSearchTerms(question: string): string[] {
     }
   }
 
-  return Array.from(terms).slice(0, 30);
+  return Array.from(terms).slice(0, 35);
 }
 
 function extractUsefulJapaneseTerms(question: string): string[] {
@@ -1848,6 +1957,11 @@ function extractUsefulJapaneseTerms(question: string): string[] {
     "見積もり",
     "申込方法",
     "参加資格",
+    "参加対象外",
+    "アレルギー",
+    "保険",
+    "ビザ",
+    "招へい理由書",
   ];
 
   for (const word of commonWords) {
@@ -1857,6 +1971,51 @@ function extractUsefulJapaneseTerms(question: string): string[] {
   }
 
   return terms;
+}
+
+function extractAnchorTerms(question: string): string[] {
+  const anchors = new Set<string>();
+  const compact = question.replace(/\s+/g, "");
+
+  const asciiMatches = question.match(/\b[A-Z0-9][A-Z0-9_-]{1,}\b/g) || [];
+  for (const match of asciiMatches) {
+    anchors.add(match);
+  }
+
+  const knownAnchors = [
+    "OIC",
+    "BKC",
+    "RSJP",
+    "RWJP",
+    "RDSP",
+    "OU",
+    "JMU",
+    "UCD",
+    "FIU",
+    "CWRU",
+    "Rutgers",
+    "CityUHK",
+    "Coupa",
+    "Convera",
+    "衣笠",
+    "朱雀",
+    "茨木",
+    "京都",
+    "大阪",
+    "奈良",
+    "関空",
+    "伊丹",
+    "JR",
+    "阪急",
+  ];
+
+  for (const anchor of knownAnchors) {
+    if (compact.toLowerCase().includes(anchor.toLowerCase())) {
+      anchors.add(anchor);
+    }
+  }
+
+  return Array.from(anchors).filter((item) => item.length >= 2);
 }
 
 function stripQuestionSuffix(value: string): string {
@@ -1877,7 +2036,7 @@ function createSearchQueries(question: string, terms: string[]): string[] {
   const queries = [question];
 
   if (terms.length > 0) {
-    queries.push(terms.slice(0, 8).join(" "));
+    queries.push(terms.slice(0, 10).join(" "));
   }
 
   return Array.from(new Set(queries.filter(Boolean)));
@@ -1886,33 +2045,37 @@ function createSearchQueries(question: string, terms: string[]): string[] {
 function scoreDocument(document: SearchDocument, question: string, searchTerms: string[]): number {
   const query = normalizeText(question);
   const queryCompact = normalizeCompactText(question);
-  const title = normalizeText(document.title);
   const titleCompact = normalizeCompactText(document.title);
-  const questionField = normalizeText(document.questionText);
   const questionFieldCompact = normalizeCompactText(document.questionText);
   const answerField = normalizeText(document.answerText);
+  const answerFieldCompact = normalizeCompactText(document.answerText);
   const keywordField = normalizeText(document.keywordText);
+  const keywordFieldCompact = normalizeCompactText(document.keywordText);
   const categoryField = normalizeText(document.categoryText);
+  const categoryFieldCompact = normalizeCompactText(document.categoryText);
   const programField = normalizeText(document.programText);
+  const programFieldCompact = normalizeCompactText(document.programText);
   const text = normalizeText(document.text);
+  const textCompact = normalizeCompactText(document.text);
+  const anchorTerms = extractAnchorTerms(question);
   let score = 0;
 
   if (queryCompact && titleCompact === queryCompact) {
-    score += 360;
+    score += 520;
   } else if (queryCompact && questionFieldCompact === queryCompact) {
-    score += 360;
+    score += 520;
   } else if (queryCompact && titleCompact.includes(queryCompact)) {
-    score += 260;
+    score += 360;
   } else if (queryCompact && questionFieldCompact.includes(queryCompact)) {
-    score += 260;
+    score += 360;
   } else if (queryCompact && queryCompact.includes(titleCompact) && titleCompact.length >= 4) {
-    score += 190;
+    score += 220;
   } else if (
     queryCompact &&
     queryCompact.includes(questionFieldCompact) &&
     questionFieldCompact.length >= 4
   ) {
-    score += 190;
+    score += 220;
   }
 
   if (query && text.includes(query)) {
@@ -1921,6 +2084,30 @@ function scoreDocument(document: SearchDocument, question: string, searchTerms: 
 
   if (query && answerField.includes(query)) {
     score += 80;
+  }
+
+  for (const anchor of anchorTerms) {
+    const anchorCompact = normalizeCompactText(anchor);
+
+    if (!anchorCompact) {
+      continue;
+    }
+
+    if (titleCompact.includes(anchorCompact) || questionFieldCompact.includes(anchorCompact)) {
+      score += 180;
+    } else if (
+      keywordFieldCompact.includes(anchorCompact) ||
+      programFieldCompact.includes(anchorCompact) ||
+      categoryFieldCompact.includes(anchorCompact)
+    ) {
+      score += 110;
+    } else if (answerFieldCompact.includes(anchorCompact)) {
+      score += 70;
+    } else if (textCompact.includes(anchorCompact)) {
+      score += 35;
+    } else {
+      score -= 120;
+    }
   }
 
   for (const term of searchTerms) {
@@ -1932,34 +2119,34 @@ function scoreDocument(document: SearchDocument, question: string, searchTerms: 
     }
 
     if (titleCompact.includes(compactTerm)) {
-      score += 52;
+      score += 58;
     }
 
     if (questionFieldCompact.includes(compactTerm)) {
-      score += 60;
+      score += 68;
     }
 
-    if (keywordField.includes(normalizedTerm)) {
-      score += 38;
+    if (keywordField.includes(normalizedTerm) || keywordFieldCompact.includes(compactTerm)) {
+      score += 40;
     }
 
-    if (categoryField.includes(normalizedTerm)) {
-      score += 26;
+    if (categoryField.includes(normalizedTerm) || categoryFieldCompact.includes(compactTerm)) {
+      score += 28;
     }
 
-    if (programField.includes(normalizedTerm)) {
-      score += 26;
+    if (programField.includes(normalizedTerm) || programFieldCompact.includes(compactTerm)) {
+      score += 28;
     }
 
     const answerCount = countOccurrences(answerField, normalizedTerm);
     score += Math.min(answerCount * 12, 48);
 
     const textCount = countOccurrences(text, normalizedTerm);
-    score += Math.min(textCount * 6, 30);
+    score += Math.min(textCount * 5, 28);
   }
 
   if (document.sourceType === "database") {
-    score += 24;
+    score += 30;
   }
 
   if (document.sourceType === "rootPage") {
@@ -1967,7 +2154,11 @@ function scoreDocument(document: SearchDocument, question: string, searchTerms: 
   }
 
   if (document.sourceType === "search") {
-    score -= 12;
+    score -= 25;
+  }
+
+  if (document.answerText && document.answerText.trim().length >= 8) {
+    score += 18;
   }
 
   if (document.sourceType === "search" && score < 0) {
@@ -1981,17 +2172,24 @@ function scoreDocument(document: SearchDocument, question: string, searchTerms: 
   return score;
 }
 
-function selectFinalDocuments(documents: SearchDocument[]): SearchDocument[] {
+function selectFinalDocuments(documents: SearchDocument[], question: string): SearchDocument[] {
   if (documents.length === 0) {
     return [];
   }
 
-  const topScore = documents[0].score;
-  const hasConfidentDatabaseHit = documents.some(
+  const anchorTerms = extractAnchorTerms(question);
+  const anchorMatchingDocs =
+    anchorTerms.length > 0
+      ? documents.filter((doc) => documentMatchesAllAnchors(doc, anchorTerms))
+      : [];
+
+  const baseDocuments = anchorMatchingDocs.length > 0 ? anchorMatchingDocs : documents;
+  const topScore = baseDocuments[0].score;
+  const hasConfidentDatabaseHit = baseDocuments.some(
     (doc) => doc.sourceType === "database" && doc.score >= MIN_CONFIDENT_SCORE
   );
 
-  const selected = documents.filter((doc) => {
+  const selected = baseDocuments.filter((doc) => {
     if (doc.score < MIN_CONFIDENT_SCORE) {
       return false;
     }
@@ -2000,14 +2198,30 @@ function selectFinalDocuments(documents: SearchDocument[]): SearchDocument[] {
       return doc.score >= MIN_SEARCH_API_SCORE_WHEN_DATABASE_HIT_EXISTS;
     }
 
-    return doc.score >= Math.max(MIN_CONFIDENT_SCORE, Math.floor(topScore * 0.3));
+    return doc.score >= Math.max(MIN_CONFIDENT_SCORE, Math.floor(topScore * 0.24));
   });
 
   if (selected.length > 0) {
     return selected.slice(0, MAX_SELECTED_DOCS);
   }
 
-  return documents.slice(0, Math.min(3, MAX_SELECTED_DOCS));
+  return baseDocuments.slice(0, Math.min(3, MAX_SELECTED_DOCS));
+}
+
+function documentMatchesAllAnchors(document: SearchDocument, anchors: string[]): boolean {
+  const target = normalizeCompactText(
+    [
+      document.title,
+      document.questionText,
+      document.answerText,
+      document.keywordText,
+      document.categoryText,
+      document.programText,
+      document.text,
+    ].join("\n")
+  );
+
+  return anchors.every((anchor) => target.includes(normalizeCompactText(anchor)));
 }
 
 function sortDocumentsByRelevance(a: SearchDocument, b: SearchDocument): number {
@@ -2045,6 +2259,10 @@ function createMatchReason(
   const queryCompact = normalizeCompactText(question);
   const titleCompact = normalizeCompactText(document.title);
   const questionCompact = normalizeCompactText(document.questionText);
+  const anchors = extractAnchorTerms(question);
+  const matchedAnchors = anchors.filter((anchor) =>
+    normalizeCompactText(document.text).includes(normalizeCompactText(anchor))
+  );
 
   if (queryCompact && titleCompact === queryCompact) {
     reasons.push("タイトル完全一致");
@@ -2054,6 +2272,10 @@ function createMatchReason(
     reasons.push("タイトルに質問文を含む");
   } else if (queryCompact && questionCompact.includes(queryCompact)) {
     reasons.push("Question欄に質問文を含む");
+  }
+
+  if (matchedAnchors.length > 0) {
+    reasons.push(`固有語一致: ${matchedAnchors.join(", ")}`);
   }
 
   const matchedTerms = searchTerms
@@ -2070,7 +2292,7 @@ function createMatchReason(
         normalizeCompactText(document.keywordText).includes(compactTerm)
       );
     })
-    .slice(0, 5);
+    .slice(0, 6);
 
   if (matchedTerms.length > 0) {
     reasons.push(`一致語: ${matchedTerms.join(", ")}`);
@@ -2196,7 +2418,7 @@ function dedupeNotionPages(pages: NotionPage[]): NotionPage[] {
 }
 
 function createPreview(text: string): string {
-  return text.replace(/\s+/g, " ").trim().slice(0, 300);
+  return text.replace(/\s+/g, " ").trim().slice(0, 340);
 }
 
 async function notionFetch<T>(
