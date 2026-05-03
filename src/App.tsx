@@ -911,6 +911,13 @@ type ApprovedAnswerDisplay = {
   matchedPrefix: string;
 };
 
+function normalizeForApprovedAnswerCheck(value: string) {
+  return value
+    .toLowerCase()
+    .replace(/[\s_\-・/\|()[\]{}「」『』【】,:;'"`~!?！？。、，．]+/g, "")
+    .trim();
+}
+
 function getApprovedAnswerDisplay(payload: AnswerPayload): ApprovedAnswerDisplay {
   const rawAnswer = normalizeString(payload.answer, "");
   let matchedPrefix = "";
@@ -926,7 +933,7 @@ function getApprovedAnswerDisplay(payload: AnswerPayload): ApprovedAnswerDisplay
 
   const sourceCounts = payload.debug?.search?.sourceCounts ?? {};
   const hasApprovedSource = Object.entries(sourceCounts).some(([sourceName, count]) => {
-    const normalizedName = normalizeCompactText(sourceName);
+    const normalizedName = normalizeForApprovedAnswerCheck(sourceName);
 
     return (
       Number(count) > 0 &&
@@ -938,7 +945,7 @@ function getApprovedAnswerDisplay(payload: AnswerPayload): ApprovedAnswerDisplay
 
   const references = payload.references || [];
   const hasApprovedReference = references.some((reference) => {
-    const normalizedReference = normalizeCompactText(reference);
+    const normalizedReference = normalizeForApprovedAnswerCheck(reference);
 
     return (
       normalizedReference.includes("approvedanswer") ||
@@ -1118,7 +1125,7 @@ function renderHeroCopy() {
       <div className="brand-copy">
         <p className="hero-kicker">RSJP Manual Assistant</p>
         <h1>RSJP業務マニュアルAI</h1>
-        <p>承認済み回答DBとNotionナレッジを参照し、回答・手順・チェックリストを整理します。</p>
+        <p>Notionナレッジを参照し、回答・手順・チェックリストを整理します。</p>
       </div>
     </div>
   );
@@ -1146,7 +1153,7 @@ function renderLoadingCard() {
         <div>
           <p className="loading-title">承認済み回答DBとMain Manual Databaseを確認しています</p>
           <p className="loading-subtitle">
-            まずスタッフ確認済みの回答を探し、該当がない場合はMain Manual Databaseから回答を整理します。
+            まず承認済み回答DBを確認し、該当がなければMain Manual Databaseから根拠を探します。
           </p>
         </div>
       </div>
@@ -1156,10 +1163,10 @@ function renderLoadingCard() {
       </div>
 
       <div className="loading-steps">
-        <span>承認DB確認</span>
         <span>質問解析</span>
-        <span>Notion検索</span>
-        <span>回答整理</span>
+        <span>承認DB確認</span>
+        <span>根拠確認</span>
+        <span>回答生成</span>
       </div>
     </div>
   );
@@ -2044,7 +2051,7 @@ export default function App() {
             <div className="side-panel-header">
               <div>
                 <h2>質問する</h2>
-                <p className="meta">承認済み回答DBを先に確認し、該当がない場合はMain Manual Databaseの内容に基づいて回答します。</p>
+                <p className="meta">Main Manual Databaseの内容に基づいて回答します。</p>
               </div>
             </div>
 
@@ -2075,7 +2082,7 @@ export default function App() {
             {isLoading && (
               <div className="side-loading-note">
                 <span className="mini-spinner" />
-                Main Manual Databaseを確認中です。
+                承認済み回答DBとMain Manual Databaseを確認中です。
               </div>
             )}
 
