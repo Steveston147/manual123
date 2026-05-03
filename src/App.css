@@ -2413,3 +2413,16 @@ body {
     color: #0f172a !important;
   }
 }
+
+/* =========================================================
+   Approved answer icon correction
+   承認済み回答カード左上の $2713 表示を正しいチェックマークに修正
+========================================================= */
+
+.approved-answer-notice h4::before {
+  content: "$2713" !important;
+  font-family: Arial, "Segoe UI Symbol", "Noto Sans Symbols", sans-serif !important;
+  line-height: 1 !important;
+  text-indent: 0 !important;
+  letter-spacing: 0 !important;
+}
