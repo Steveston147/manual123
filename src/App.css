@@ -561,6 +561,32 @@ button.primary {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
 }
+.feature-card {
+  display: grid;
+  gap: 10px;
+  padding: 16px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid var(--line-soft);
+  box-shadow: 0 10px 22px rgba(15, 23, 42, 0.05);
+  justify-items: center;
+  text-align: center;
+  align-content: start;
+}
+
+.feature-card h3 {
+  margin: 0;
+  font-size: 16px;
+  line-height: 1.3;
+}
+
+.feature-card p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--text-soft);
+}
+
 .feature-icon {
   position: relative !important;
   width: 42px !important;
@@ -591,6 +617,12 @@ button.primary {
   line-height: 1 !important;
   letter-spacing: 0 !important;
   transform: none !important;
+}
+
+.metric-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
 }
 
 .metric-card {
@@ -2319,7 +2351,7 @@ body {
 }
 
 .approved-answer-notice h4::before {
-  content: "$2713";
+  content: "";
   width: 22px;
   height: 22px;
   display: inline-grid;
@@ -2409,7 +2441,7 @@ body {
 ========================================================= */
 
 .approved-answer-notice h4::before {
-  content: "$2713" !important;
+  content: "" !important;
   font-family: Arial, "Segoe UI Symbol", "Noto Sans Symbols", sans-serif !important;
   line-height: 1 !important;
   text-indent: 0 !important;
@@ -2541,6 +2573,8 @@ body {
 }
 
 .answer-card .revision-panel.pro-revision-panel .edit-actions button {
+  display: inline-flex !important;
+  align-items: center !important;
   min-height: 42px !important;
   justify-content: center !important;
   border-radius: 13px !important;
@@ -2646,5 +2680,54 @@ body {
 @media print {
   .answer-card .revision-panel.pro-revision-panel {
     display: none !important;
+  }
+}
+
+/* =========================================================
+   Final UI cleanup for Stable v1.1
+   ログインカード番号・回答修正エリアの安定化
+========================================================= */
+
+.feature-card {
+  justify-items: center !important;
+  text-align: center !important;
+}
+
+.feature-card .feature-icon {
+  position: relative !important;
+  width: 42px !important;
+  height: 42px !important;
+  margin: 0 auto !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+}
+
+.feature-card .feature-icon::after {
+  position: absolute !important;
+  inset: 0 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+}
+
+.approved-answer-notice h4::before {
+  content: "" !important;
+  display: none !important;
+}
+
+.answer-card .revision-panel.pro-revision-panel .edit-actions button {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+}
+
+.answer-card .revision-panel.pro-revision-panel .edit-box > .meta {
+  display: block !important;
+}
+
+@media (max-width: 720px) {
+  .feature-card {
+    min-height: auto !important;
   }
 }
