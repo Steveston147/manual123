@@ -148,6 +148,9 @@ const MAX_OUTPUT_TOKENS = 1800;
 
 const MIN_CONFIDENT_SCORE = 70;
 const MIN_DIRECT_ANSWER_SCORE = 180;
+const MIN_APPROVED_ANSWER_SCORE = 180;
+
+const APPROVED_ANSWER_SOURCE_NAME = "RSJP Approved Answer Database";
 
 const NOTION_TIMEOUT_MS = 12000;
 const OPENAI_TIMEOUT_MS = 20000;
@@ -175,6 +178,30 @@ const ANSWER_PROPERTY_NAMES = [
   "WebDisplay",
   "Memo",
   "メモ",
+];
+
+const APPROVED_REVISED_ANSWER_PROPERTY_NAMES = [
+  "Revised Answer",
+  "RevisedAnswer",
+  "承認済み回答",
+  "修正済み回答",
+  "修正回答",
+  "回答",
+  "Answer",
+];
+
+const APPROVED_ORIGINAL_ANSWER_PROPERTY_NAMES = [
+  "Original Answer",
+  "OriginalAnswer",
+  "元の回答",
+  "Original",
+];
+
+const APPROVED_CHECKBOX_PROPERTY_NAMES = [
+  "Approved",
+  "承認済み",
+  "承認",
+  "確認済み",
 ];
 
 const KEYWORD_PROPERTY_NAMES = [
@@ -254,8 +281,9 @@ export default async function handler(req: RequestLike, res: ResponseLike): Prom
       ok: true,
       name: "RSJP Manual AI API",
       endpoint: "/api/ask",
-      mode: "Main Manual Database only",
-      message: "API Function is available. Please send POST { question: string }.",
+      mode: "Approved Answer Database first, then Main Manual Database",
+      message:
+        "API Function is available. Please send POST { question: string }. Approved Answer Database is checked first when configured.",
       updatedAt: new Date().toISOString(),
     });
     return;
@@ -287,7 +315,16 @@ export default async function handler(req: RequestLike, res: ResponseLike): Prom
   }
 
   try {
+    const approvedResult = await searchApprovedAnswerKnowledge(question);
+
+    if (approvedResult.payload) {
+      sendJson(res, 200, approvedResult.payload);
+      return;
+    }
+
     const searchResult = await searchKnowledge(question);
+    mergeApprovedDebug(searchResult.debug, approvedResult.debug);
+
     const answerPayload = await buildAnswer(question, searchResult.documents, searchResult.debug);
 
     sendJson(res, 200, answerPayload);
@@ -475,6 +512,424 @@ async function searchKnowledge(question: string): Promise<{
     documents: finalDocuments,
     debug,
   };
+}
+
+
+async function searchApprovedAnswerKnowledge(question: string): Promise<{
+  payload: AnswerPayload | null;
+  documents: SearchDocument[];
+  debug: SearchDebug;
+}> {
+  const debug = createEmptyDebug(question);
+  const notionApiKey = getEnv("NOTION_API_KEY");
+  const approvedDatabaseId = getEnv("NOTION_APPROVED_ANSWER_DATABASE_ID");
+
+  debug.searchTerms = createSearchTerms(question);
+  debug.searchQueries = createSearchQueries(question, debug.searchTerms);
+  debug.sourceCounts[APPROVED_ANSWER_SOURCE_NAME] = 0;
+
+  if (!notionApiKey) {
+    debug.errors.push("NOTION_API_KEY が設定されていないため、承認済み回答DBを確認できません。");
+    return { payload: null, documents: [], debug };
+  }
+
+  if (!approvedDatabaseId) {
+    debug.errors.push(
+      "NOTION_APPROVED_ANSWER_DATABASE_ID が設定されていないため、承認済み回答DBを確認できません。"
+    );
+    return { payload: null, documents: [], debug };
+  }
+
+  const source: SourceConfig = {
+    name: APPROVED_ANSWER_SOURCE_NAME,
+    envName: "NOTION_APPROVED_ANSWER_DATABASE_ID",
+    id: approvedDatabaseId,
+    type: "database",
+  };
+
+  try {
+    const pages = await queryDatabasePages(source.id, question, debug.searchTerms);
+    const approvedPages = pages.filter((page) => isApprovedAnswerPage(page.properties || {}));
+
+    debug.databasePageCount = approvedPages.length;
+    debug.seedPageCount = approvedPages.length;
+    debug.sourceCounts[APPROVED_ANSWER_SOURCE_NAME] = approvedPages.length;
+
+    const documents = approvedPages
+      .map((page) => approvedPageToDocument(page, source, question, debug.searchTerms))
+      .filter((doc) => doc.answerText.trim().length > 0)
+      .map((doc) => ({
+        ...doc,
+        score: scoreApprovedAnswerDocument(doc, question, debug.searchTerms),
+      }))
+      .sort(sortDocumentsByRelevance);
+
+    const selectedDocuments = selectApprovedAnswerDocuments(documents, question);
+
+    debug.discoveredPageCount = documents.length;
+    debug.selectedPageCount = selectedDocuments.length;
+    debug.maxScore = selectedDocuments.length > 0 ? selectedDocuments[0].score : 0;
+    debug.minimumScore =
+      selectedDocuments.length > 0 ? selectedDocuments[selectedDocuments.length - 1].score : 0;
+    debug.selectedPages = selectedDocuments.map((doc) => ({
+      title: doc.title,
+      score: doc.score,
+      url: doc.url,
+      lastEditedTime: doc.lastEditedTime,
+      contentPreview: createPreview(doc.text),
+      sourceName: doc.sourceName,
+      sourceType: doc.sourceType,
+      matchReason: createApprovedMatchReason(doc, question, debug.searchTerms),
+    }));
+
+    const bestDocument = selectedDocuments[0];
+
+    if (!bestDocument || !isConfidentApprovedAnswerMatch(bestDocument, question)) {
+      return { payload: null, documents: selectedDocuments, debug };
+    }
+
+    return {
+      payload: createApprovedAnswerPayload(question, bestDocument, selectedDocuments, debug),
+      documents: selectedDocuments,
+      debug,
+    };
+  } catch (error) {
+    debug.errors.push(`${source.envName}: ${getErrorMessage(error)}`);
+    debug.sourceCounts[APPROVED_ANSWER_SOURCE_NAME] = 0;
+    return { payload: null, documents: [], debug };
+  }
+}
+
+function mergeApprovedDebug(mainDebug: SearchDebug, approvedDebug: SearchDebug): void {
+  mainDebug.sourceCounts[APPROVED_ANSWER_SOURCE_NAME] =
+    approvedDebug.sourceCounts[APPROVED_ANSWER_SOURCE_NAME] || 0;
+
+  for (const error of approvedDebug.errors) {
+    if (!mainDebug.errors.includes(error)) {
+      mainDebug.errors.push(error);
+    }
+  }
+
+  const mergedTerms = new Set([...approvedDebug.searchTerms, ...mainDebug.searchTerms]);
+  mainDebug.searchTerms = Array.from(mergedTerms).slice(0, 50);
+
+  const mergedQueries = new Set([...approvedDebug.searchQueries, ...mainDebug.searchQueries]);
+  mainDebug.searchQueries = Array.from(mergedQueries).filter(Boolean).slice(0, 20);
+}
+
+function isApprovedAnswerPage(properties: Record<string, NotionProperty>): boolean {
+  const approved = getCheckboxPropertyByNames(properties, APPROVED_CHECKBOX_PROPERTY_NAMES);
+  if (approved) {
+    return true;
+  }
+
+  const statusText = getPropertyTextByNames(properties, STATUS_PROPERTY_NAMES);
+  return isApprovedStatusText(statusText);
+}
+
+function getCheckboxPropertyByNames(
+  properties: Record<string, NotionProperty>,
+  names: string[]
+): boolean {
+  const wanted = names.map(normalizePropertyName);
+
+  for (const [key, property] of Object.entries(properties)) {
+    if (!wanted.includes(normalizePropertyName(key))) {
+      continue;
+    }
+
+    if (property && property.type === "checkbox") {
+      return Boolean(property.checkbox);
+    }
+
+    const value = getPropertyValueText(property).toLowerCase();
+    if (["true", "yes", "approved", "承認済み", "承認"].includes(value)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function isApprovedStatusText(value: string): boolean {
+  const normalized = normalizeCompactText(value);
+  return (
+    normalized.includes("approved") ||
+    normalized.includes("承認済み") ||
+    normalized.includes("承認")
+  );
+}
+
+function approvedPageToDocument(
+  page: NotionPage,
+  source: SourceConfig,
+  question: string,
+  searchTerms: string[]
+): SearchDocument {
+  const properties = page.properties || {};
+  const title = getPageTitle(page);
+  const propertyText = getPropertyText(properties);
+
+  const questionText = getPropertyTextByNames(properties, QUESTION_PROPERTY_NAMES) || title;
+  const revisedAnswerText = getPropertyTextByNames(properties, APPROVED_REVISED_ANSWER_PROPERTY_NAMES);
+  const originalAnswerText = getPropertyTextByNames(properties, APPROVED_ORIGINAL_ANSWER_PROPERTY_NAMES);
+  const keywordText = getPropertyTextByNames(properties, KEYWORD_PROPERTY_NAMES);
+  const categoryText = getPropertyTextByNames(properties, CATEGORY_PROPERTY_NAMES);
+  const programText = getPropertyTextByNames(properties, PROGRAM_PROPERTY_NAMES);
+  const statusText = getPropertyTextByNames(properties, STATUS_PROPERTY_NAMES);
+
+  const text = [
+    title,
+    questionText ? `Question: ${questionText}` : "",
+    revisedAnswerText ? `Approved Answer: ${revisedAnswerText}` : "",
+    originalAnswerText ? `Original Answer: ${originalAnswerText}` : "",
+    keywordText ? `Keyword: ${keywordText}` : "",
+    categoryText ? `Category: ${categoryText}` : "",
+    programText ? `Program: ${programText}` : "",
+    statusText ? `Status: ${statusText}` : "",
+    propertyText,
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  const doc: SearchDocument = {
+    id: page.id,
+    title,
+    url: page.url || "",
+    sourceName: source.name,
+    sourceType: source.type,
+    text,
+    propertyText,
+    blockText: "",
+    questionText,
+    answerText: revisedAnswerText,
+    keywordText,
+    categoryText,
+    programText,
+    statusText,
+    score: 0,
+    lastEditedTime: page.last_edited_time || page.created_time || "",
+  };
+
+  doc.score = scoreApprovedAnswerDocument(doc, question, searchTerms);
+  return doc;
+}
+
+function scoreApprovedAnswerDocument(
+  document: SearchDocument,
+  question: string,
+  searchTerms: string[]
+): number {
+  let score = scoreDocument(document, question, searchTerms);
+  const queryCompact = normalizeCompactText(question);
+  const titleCompact = normalizeCompactText(document.title);
+  const questionCompact = normalizeCompactText(document.questionText);
+  const primaryTopicTerms = extractPrimaryTopicTerms(question);
+
+  if (queryCompact && titleCompact === queryCompact) {
+    score += 700;
+  } else if (queryCompact && questionCompact === queryCompact) {
+    score += 700;
+  } else if (queryCompact && titleCompact.includes(queryCompact)) {
+    score += 420;
+  } else if (queryCompact && questionCompact.includes(queryCompact)) {
+    score += 420;
+  } else if (queryCompact && queryCompact.includes(titleCompact) && titleCompact.length >= 4) {
+    score += 260;
+  } else if (queryCompact && queryCompact.includes(questionCompact) && questionCompact.length >= 4) {
+    score += 260;
+  }
+
+  if (primaryTopicTerms.length > 0 && documentMatchesAnyTerm(document, primaryTopicTerms)) {
+    score += 160;
+  }
+
+  const meaningfulTerms = searchTerms.filter((term) => {
+    const compact = normalizeCompactText(term);
+    return compact.length >= 2 && !isWeakSearchTerm(term);
+  });
+
+  const matchedMeaningfulTerms = meaningfulTerms.filter((term) =>
+    documentMatchesAnyTerm(document, [term])
+  );
+
+  score += Math.min(matchedMeaningfulTerms.length * 18, 120);
+
+  if (document.answerText.trim().length >= 20) {
+    score += 30;
+  }
+
+  return Math.max(score, 0);
+}
+
+function selectApprovedAnswerDocuments(
+  documents: SearchDocument[],
+  question: string
+): SearchDocument[] {
+  if (documents.length === 0) {
+    return [];
+  }
+
+  const primaryTopicTerms = extractPrimaryTopicTerms(question);
+  const baseDocuments =
+    primaryTopicTerms.length > 0
+      ? documents.filter((doc) => documentMatchesAnyTerm(doc, primaryTopicTerms))
+      : documents;
+
+  const candidates = baseDocuments.length > 0 ? baseDocuments : documents;
+  const topScore = candidates[0]?.score || 0;
+
+  return candidates
+    .filter((doc) => {
+      if (doc.score < MIN_APPROVED_ANSWER_SCORE) {
+        return false;
+      }
+
+      return doc.score >= Math.max(MIN_APPROVED_ANSWER_SCORE, Math.floor(topScore * 0.4));
+    })
+    .slice(0, 5);
+}
+
+function isConfidentApprovedAnswerMatch(document: SearchDocument, question: string): boolean {
+  if (!document.answerText || document.answerText.trim().length < 8) {
+    return false;
+  }
+
+  if (document.score < MIN_APPROVED_ANSWER_SCORE) {
+    return false;
+  }
+
+  const queryCompact = normalizeCompactText(question);
+  const titleCompact = normalizeCompactText(document.title);
+  const questionCompact = normalizeCompactText(document.questionText);
+
+  if (
+    queryCompact &&
+    (titleCompact === queryCompact ||
+      questionCompact === queryCompact ||
+      titleCompact.includes(queryCompact) ||
+      questionCompact.includes(queryCompact))
+  ) {
+    return true;
+  }
+
+  const primaryTopicTerms = extractPrimaryTopicTerms(question);
+  if (primaryTopicTerms.length > 0) {
+    return documentMatchesAnyTerm(document, primaryTopicTerms) && document.score >= MIN_APPROVED_ANSWER_SCORE;
+  }
+
+  const meaningfulTerms = createSearchTerms(question).filter((term) => {
+    const compact = normalizeCompactText(term);
+    return compact.length >= 2 && !isWeakSearchTerm(term);
+  });
+
+  const matchedCount = meaningfulTerms.filter((term) => documentMatchesAnyTerm(document, [term])).length;
+
+  return matchedCount >= 2 && document.score >= MIN_APPROVED_ANSWER_SCORE + 40;
+}
+
+function createApprovedAnswerPayload(
+  question: string,
+  document: SearchDocument,
+  documents: SearchDocument[],
+  debug: SearchDebug
+): AnswerPayload {
+  const answer = [
+    "承認済み回答DBから、過去にスタッフが修正・確認した回答を優先して表示します。",
+    "",
+    document.answerText.trim(),
+    "",
+    "※この回答は承認済み回答DBに保存された内容です。案件ごとの条件が変わる場合や、費用・契約・例外対応を含む場合は、先方へ回答する前に課長確認をしてください。",
+  ].join("\n");
+
+  return {
+    answer,
+    managerGate: createManagerGateForApprovedAnswer(document),
+    steps: [
+      "承認済み回答DBから採用された回答内容を確認する",
+      "今回の質問内容と、保存済み回答の前提条件が合っているか確認する",
+      "必要に応じてMain Manual Databaseの参照元も確認する",
+      "先方へ送る前に、費用・契約・例外対応・個人情報に関わる点がないか確認する",
+      "判断が必要な場合は、課長確認用メモを作成する",
+    ],
+    checklist: [
+      { text: "承認済み回答DBから回答していることを確認した" },
+      { text: "今回の案件と保存済み回答の前提条件が一致している" },
+      { text: "Main Manual Databaseにない内容を追加で判断していない" },
+      { text: "費用・契約・支払・例外対応・個人情報に関わる場合は課長確認に回す" },
+    ],
+    imagePrompt: buildImagePrompt("approved RSJP answer workflow"),
+    imageUrl: "",
+    references: buildReferences(documents),
+    updatedAt: new Date().toISOString(),
+    oldPolicyNote:
+      "承認済み回答DBに保存されたスタッフ確認済み回答を、Main Manual Databaseより優先して表示しています。",
+    debug: {
+      search: debug,
+    },
+  };
+}
+
+function createManagerGateForApprovedAnswer(document: SearchDocument): ManagerGate {
+  return {
+    canProceedAlone: [
+      "承認済み回答DBの内容を確認する",
+      "今回の質問と保存済み回答の前提条件を照合する",
+      "保存済み回答をもとに、案内文や作業メモを作成する",
+      "Main Manual Databaseの参照元を追加確認する",
+    ],
+    needManagerApproval: [
+      "保存済み回答と今回の案件条件が違う場合",
+      "費用、見積、請求、支払、キャンセル、契約、受入可否に関わる場合",
+      "先方に対して例外的な対応や確約を行う場合",
+      "個人情報、アレルギー、医療情報、安全面の判断を含む場合",
+      "保存済み回答の内容が古い可能性がある場合",
+    ],
+    approvalTiming: [
+      "先方へ回答を送る前",
+      "保存済み回答を今回の案件に合わせて変更する前",
+      "Main Manual Databaseとの整合性に迷った時",
+      "費用・契約・例外対応を含む時",
+    ],
+    managerQuestionTemplate: [
+      `承認済み回答DBの「${document.title}」を参照しました。`,
+      "今回の案件にも同じ考え方で案内してよいか確認させてください。",
+      "必要であれば、修正後に再度承認済み回答DBへ保存します。",
+    ].join("\n"),
+  };
+}
+
+function createApprovedMatchReason(
+  document: SearchDocument,
+  question: string,
+  searchTerms: string[]
+): string {
+  const reasons: string[] = [];
+  const queryCompact = normalizeCompactText(question);
+  const titleCompact = normalizeCompactText(document.title);
+  const questionCompact = normalizeCompactText(document.questionText);
+
+  if (queryCompact && titleCompact === queryCompact) {
+    reasons.push("承認済み回答タイトル完全一致");
+  } else if (queryCompact && questionCompact === queryCompact) {
+    reasons.push("承認済みQuestion欄完全一致");
+  } else if (queryCompact && titleCompact.includes(queryCompact)) {
+    reasons.push("承認済み回答タイトルに質問文を含む");
+  } else if (queryCompact && questionCompact.includes(queryCompact)) {
+    reasons.push("承認済みQuestion欄に質問文を含む");
+  }
+
+  const matchedTerms = searchTerms
+    .filter((term) => documentMatchesAnyTerm(document, [term]))
+    .slice(0, 6);
+
+  if (matchedTerms.length > 0) {
+    reasons.push(`一致語: ${matchedTerms.join(", ")}`);
+  }
+
+  reasons.push("参照元: 承認済み回答DB");
+
+  return reasons.join(" / ");
 }
 
 function createEmptyDebug(question: string): SearchDebug {
