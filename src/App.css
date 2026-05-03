@@ -561,32 +561,6 @@ button.primary {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
 }
-.feature-card {
-  display: grid;
-  gap: 10px;
-  padding: 16px;
-  border-radius: 16px;
-  background: rgba(255, 255, 255, 0.92);
-  border: 1px solid var(--line-soft);
-  box-shadow: 0 10px 22px rgba(15, 23, 42, 0.05);
-  justify-items: center;
-  text-align: center;
-  align-content: start;
-}
-
-.feature-card h3 {
-  margin: 0;
-  font-size: 16px;
-  line-height: 1.3;
-}
-
-.feature-card p {
-  margin: 0;
-  font-size: 13px;
-  line-height: 1.7;
-  color: var(--text-soft);
-}
-
 .feature-icon {
   position: relative !important;
   width: 42px !important;
@@ -617,12 +591,6 @@ button.primary {
   line-height: 1 !important;
   letter-spacing: 0 !important;
   transform: none !important;
-}
-
-.metric-row {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
 }
 
 .metric-card {
@@ -2351,7 +2319,7 @@ body {
 }
 
 .approved-answer-notice h4::before {
-  content: "";
+  content: "$2713";
   width: 22px;
   height: 22px;
   display: inline-grid;
@@ -2441,7 +2409,7 @@ body {
 ========================================================= */
 
 .approved-answer-notice h4::before {
-  content: "" !important;
+  content: "$2713" !important;
   font-family: Arial, "Segoe UI Symbol", "Noto Sans Symbols", sans-serif !important;
   line-height: 1 !important;
   text-indent: 0 !important;
@@ -2573,8 +2541,6 @@ body {
 }
 
 .answer-card .revision-panel.pro-revision-panel .edit-actions button {
-  display: inline-flex !important;
-  align-items: center !important;
   min-height: 42px !important;
   justify-content: center !important;
   border-radius: 13px !important;
@@ -2684,50 +2650,110 @@ body {
 }
 
 /* =========================================================
-   Final UI cleanup for Stable v1.1
-   ログインカード番号・回答修正エリアの安定化
+   Approved save confirmation UI
+   承認済み回答DBへ保存する前の確認ボックスを見やすくする
 ========================================================= */
 
-.feature-card {
-  justify-items: center !important;
-  text-align: center !important;
+.answer-card .revision-panel.pro-revision-panel .approved-save-confirm {
+  margin-top: 14px !important;
+  padding: 15px !important;
+  border-radius: 16px !important;
+  background:
+    linear-gradient(135deg, rgba(255, 251, 235, 0.98), rgba(255, 247, 237, 0.98)),
+    #fffbeb !important;
+  border: 1px solid #fde68a !important;
+  box-shadow:
+    inset 5px 0 0 #f59e0b,
+    0 10px 22px rgba(245, 158, 11, 0.08) !important;
 }
 
-.feature-card .feature-icon {
-  position: relative !important;
-  width: 42px !important;
-  height: 42px !important;
-  margin: 0 auto !important;
+.answer-card .revision-panel.pro-revision-panel .approved-save-confirm .mini-label {
+  margin: 0 0 7px !important;
+  color: #92400e !important;
+  font-size: 13px !important;
+  font-weight: 900 !important;
+  letter-spacing: 0.01em !important;
+}
+
+.answer-card .revision-panel.pro-revision-panel .approved-save-confirm > .meta {
+  margin: 0 0 10px !important;
+  padding: 0 !important;
+  border: none !important;
+  background: transparent !important;
+  color: #7c2d12 !important;
+  font-weight: 700 !important;
+  line-height: 1.75 !important;
+}
+
+.answer-card .revision-panel.pro-revision-panel .approved-save-confirm .compact-list {
+  margin: 0 !important;
+  padding: 11px 12px 11px 28px !important;
+  border-radius: 14px !important;
+  background: rgba(255, 255, 255, 0.78) !important;
+  border: 1px solid #fed7aa !important;
+  color: #7c2d12 !important;
+  line-height: 1.78 !important;
+}
+
+.answer-card .revision-panel.pro-revision-panel .approved-save-confirm .compact-list li {
+  margin-bottom: 5px !important;
+}
+
+.answer-card .revision-panel.pro-revision-panel .approved-save-confirm .compact-list li:last-child {
+  margin-bottom: 0 !important;
+}
+
+.answer-card .revision-panel.pro-revision-panel .approved-save-confirm-actions {
   display: flex !important;
-  align-items: center !important;
-  justify-content: center !important;
+  flex-wrap: wrap !important;
+  gap: 10px !important;
+  margin-top: 12px !important;
 }
 
-.feature-card .feature-icon::after {
-  position: absolute !important;
-  inset: 0 !important;
-  display: flex !important;
-  align-items: center !important;
-  justify-content: center !important;
+.answer-card .revision-panel.pro-revision-panel .approved-save-confirm-actions button {
+  min-height: 42px !important;
+  border-radius: 13px !important;
+  font-size: 13px !important;
+  font-weight: 900 !important;
+  box-shadow: none !important;
 }
 
-.approved-answer-notice h4::before {
-  content: "" !important;
-  display: none !important;
+.answer-card .revision-panel.pro-revision-panel .approved-save-confirm-actions button:first-child {
+  min-width: 120px !important;
+  background: #ffffff !important;
+  border-color: #fed7aa !important;
+  color: #7c2d12 !important;
 }
 
-.answer-card .revision-panel.pro-revision-panel .edit-actions button {
-  display: inline-flex !important;
-  align-items: center !important;
-  justify-content: center !important;
+.answer-card .revision-panel.pro-revision-panel .approved-save-confirm-actions button:last-child {
+  min-width: 250px !important;
+  background: linear-gradient(135deg, #dcfce7, #ecfdf5) !important;
+  border-color: #4ade80 !important;
+  color: #166534 !important;
+  box-shadow: 0 10px 20px rgba(34, 197, 94, 0.12) !important;
 }
 
-.answer-card .revision-panel.pro-revision-panel .edit-box > .meta {
-  display: block !important;
+.answer-card .revision-panel.pro-revision-panel .approved-save-confirm-actions button:last-child:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 14px 24px rgba(34, 197, 94, 0.16) !important;
+}
+
+.answer-card .revision-panel.pro-revision-panel .approved-save-confirm-actions button:disabled {
+  transform: none !important;
+  box-shadow: none !important;
 }
 
 @media (max-width: 720px) {
-  .feature-card {
-    min-height: auto !important;
+  .answer-card .revision-panel.pro-revision-panel .approved-save-confirm-actions {
+    display: grid !important;
+    grid-template-columns: 1fr !important;
+  }
+
+  .answer-card .revision-panel.pro-revision-panel .approved-save-confirm-actions button,
+  .answer-card .revision-panel.pro-revision-panel .approved-save-confirm-actions button:first-child,
+  .answer-card .revision-panel.pro-revision-panel .approved-save-confirm-actions button:last-child {
+    width: 100% !important;
+    min-width: 0 !important;
   }
 }
+
