@@ -159,22 +159,22 @@ const LOGIN_FEATURES = [
   {
     title: "Notion検索",
     text: "RSJPマニュアルDBから関連ページを探し、根拠付きで回答します。",
-    icon: "⌕",
+    icon: "$2315",
   },
   {
     title: "課長確認ゲート",
     text: "新人が進めてよい作業と、確認が必要な判断を分けます。",
-    icon: "✓",
+    icon: "$2713",
   },
   {
     title: "手順化",
     text: "長い業務説明を、作業順・チェックリスト・確認ポイントに整理します。",
-    icon: "▣",
+    icon: "$25A3",
   },
   {
     title: "印刷対応",
     text: "回答をそのまま新人説明・引き継ぎ資料として印刷できます。",
-    icon: "↧",
+    icon: "$21A7",
   },
 ];
 
@@ -899,6 +899,83 @@ function assistantFromRaw(question: string, raw: unknown): AnswerPayload {
   return normalizeAnswerPayload(question, raw);
 }
 
+const APPROVED_ANSWER_PREFIXES = [
+  "承認済み回答DBから、過去にスタッフが修正・確認した回答を優先して表示します。",
+  "承認済み回答DBから、過去にスタッフが修正・確認した回答を優先して表示しています。",
+  "承認済み回答DBから回答しています。",
+];
+
+type ApprovedAnswerDisplay = {
+  isApproved: boolean;
+  answer: string;
+  matchedPrefix: string;
+};
+
+function getApprovedAnswerDisplay(payload: AnswerPayload): ApprovedAnswerDisplay {
+  const rawAnswer = normalizeString(payload.answer, "");
+  let matchedPrefix = "";
+  let cleanedAnswer = rawAnswer;
+
+  for (const prefix of APPROVED_ANSWER_PREFIXES) {
+    if (cleanedAnswer.startsWith(prefix)) {
+      matchedPrefix = prefix;
+      cleanedAnswer = cleanedAnswer.slice(prefix.length).replace(/^\s+/, "");
+      break;
+    }
+  }
+
+  const sourceCounts = payload.debug?.search?.sourceCounts ?? {};
+  const hasApprovedSource = Object.entries(sourceCounts).some(([sourceName, count]) => {
+    const normalizedName = normalizeCompactText(sourceName);
+
+    return (
+      Number(count) > 0 &&
+      (normalizedName.includes("approvedanswer") ||
+        normalizedName.includes("承認済み回答") ||
+        normalizedName.includes("承認回答"))
+    );
+  });
+
+  const references = payload.references || [];
+  const hasApprovedReference = references.some((reference) => {
+    const normalizedReference = normalizeCompactText(reference);
+
+    return (
+      normalizedReference.includes("approvedanswer") ||
+      normalizedReference.includes("承認済み回答") ||
+      normalizedReference.includes("承認回答")
+    );
+  });
+
+  return {
+    isApproved: Boolean(matchedPrefix) || hasApprovedSource || hasApprovedReference,
+    answer: cleanedAnswer || rawAnswer,
+    matchedPrefix,
+  };
+}
+
+function renderApprovedAnswerNotice(display: ApprovedAnswerDisplay) {
+  if (!display.isApproved) return null;
+
+  return (
+    <section className="answer-section approved-answer-notice">
+      <div className="section-heading-row">
+        <div>
+          <h4>承認済み回答</h4>
+          <p className="meta">
+            この回答は、スタッフが過去に修正・確認してNotionの承認済み回答DBへ保存した内容を優先表示しています。
+          </p>
+        </div>
+        <span className="section-badge">Approved</span>
+      </div>
+
+      <p className="meta">
+        案件ごとの条件が変わる場合、または費用・契約・例外対応を含む場合は、先方へ回答する前に課長確認をしてください。
+      </p>
+    </section>
+  );
+}
+
 function renderSearchDebug(debug?: SearchDebug) {
   if (!debug) return null;
 
@@ -1041,7 +1118,7 @@ function renderHeroCopy() {
       <div className="brand-copy">
         <p className="hero-kicker">RSJP Manual Assistant</p>
         <h1>RSJP業務マニュアルAI</h1>
-        <p>Notionナレッジを参照し、回答・手順・チェックリストを整理します。</p>
+        <p>承認済み回答DBとNotionナレッジを参照し、回答・手順・チェックリストを整理します。</p>
       </div>
     </div>
   );
@@ -1067,9 +1144,9 @@ function renderLoadingCard() {
         <span className="loading-spinner" aria-hidden="true" />
 
         <div>
-          <p className="loading-title">Main Manual Databaseを確認しています</p>
+          <p className="loading-title">承認済み回答DBとMain Manual Databaseを確認しています</p>
           <p className="loading-subtitle">
-            関連ページを検索し、根拠に基づいて回答を整理しています。
+            まずスタッフ確認済みの回答を探し、該当がない場合はMain Manual Databaseから回答を整理します。
           </p>
         </div>
       </div>
@@ -1079,10 +1156,10 @@ function renderLoadingCard() {
       </div>
 
       <div className="loading-steps">
+        <span>承認DB確認</span>
         <span>質問解析</span>
         <span>Notion検索</span>
-        <span>根拠確認</span>
-        <span>回答生成</span>
+        <span>回答整理</span>
       </div>
     </div>
   );
@@ -1619,6 +1696,7 @@ export default function App() {
     if (!message.payload) return null;
 
     const payload = message.payload;
+    const approvedAnswerDisplay = getApprovedAnswerDisplay(payload);
     const isSavingApprovedAnswer = Boolean(approvedAnswerSavingIds[message.id]);
     const approvedAnswerSaveMessage = approvedAnswerSaveMessages[message.id];
     const approvedAnswerSaveError = approvedAnswerSaveErrors[message.id];
@@ -1631,18 +1709,22 @@ export default function App() {
           </button>
         </div>
 
+        {renderApprovedAnswerNotice(approvedAnswerDisplay)}
+
         <section className="answer-section answer-section-main">
           <div className="section-heading-row">
             <div>
-              <h3>回答</h3>
+              <h3>{approvedAnswerDisplay.isApproved ? "回答本文" : "回答"}</h3>
               <p className="meta">
                 質問：{message.question || "不明"} / 更新確認：
                 {formatDateTime(payload.updatedAt)}
               </p>
             </div>
-            <span className="section-badge">回答</span>
+            <span className="section-badge">
+              {approvedAnswerDisplay.isApproved ? "確認済" : "回答"}
+            </span>
           </div>
-          <p className="answer-text">{payload.answer}</p>
+          <p className="answer-text">{approvedAnswerDisplay.answer}</p>
         </section>
 
         {renderManagerGate(payload.managerGate)}
@@ -1753,7 +1835,7 @@ export default function App() {
                 type="button"
                 onClick={() => {
                   setEditTargetId(message.id);
-                  setEditedAnswer(payload.answer);
+                  setEditedAnswer(approvedAnswerDisplay.answer);
                   setApprovedAnswerSaveMessages((current) => ({
                     ...current,
                     [message.id]: "",
@@ -1854,7 +1936,7 @@ export default function App() {
                     type="password"
                     value={password}
                     onChange={(event) => setPassword(event.target.value)}
-                    placeholder="••••••••"
+                    placeholder="$2022$2022$2022$2022$2022$2022$2022$2022"
                   />
                 </label>
 
@@ -1962,7 +2044,7 @@ export default function App() {
             <div className="side-panel-header">
               <div>
                 <h2>質問する</h2>
-                <p className="meta">Main Manual Databaseの内容に基づいて回答します。</p>
+                <p className="meta">承認済み回答DBを先に確認し、該当がない場合はMain Manual Databaseの内容に基づいて回答します。</p>
               </div>
             </div>
 
