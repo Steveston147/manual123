@@ -905,6 +905,12 @@ const APPROVED_ANSWER_PREFIXES = [
   "承認済み回答DBから回答しています。",
 ];
 
+const APPROVED_ANSWER_TRAILING_NOTES = [
+  "※この回答は承認済み回答DBに保存された内容です。案件ごとの条件が変わる場合や、費用・契約・例外対応を含む場合は、先方へ回答する前に課長確認をしてください。",
+  "※この回答は承認済み回答DBに保存された内容です。案件ごとの条件が変わる場合、費用・契約・例外対応を含む場合は、先方へ回答する前に課長確認をしてください。",
+  "この回答は承認済み回答DBに保存された内容です。案件ごとの条件が変わる場合や、費用・契約・例外対応を含む場合は、先方へ回答する前に課長確認をしてください。",
+];
+
 type ApprovedAnswerDisplay = {
   isApproved: boolean;
   answer: string;
@@ -916,6 +922,25 @@ function normalizeForApprovedAnswerCheck(value: string) {
     .toLowerCase()
     .replace(/[\s_\-・/\|()[\]{}「」『』【】,:;'"`~!?！？。、，．]+/g, "")
     .trim();
+}
+
+function removeApprovedAnswerTrailingNote(value: string) {
+  let cleaned = value.trim();
+
+  for (const note of APPROVED_ANSWER_TRAILING_NOTES) {
+    if (cleaned.endsWith(note)) {
+      cleaned = cleaned.slice(0, -note.length).trim();
+    }
+  }
+
+  cleaned = cleaned
+    .replace(
+      /\n*\s*※この回答は承認済み回答DBに保存された内容です。[\s\S]*?課長確認をしてください。\s*$/,
+      ""
+    )
+    .trim();
+
+  return cleaned;
 }
 
 function getApprovedAnswerDisplay(payload: AnswerPayload): ApprovedAnswerDisplay {
@@ -930,6 +955,8 @@ function getApprovedAnswerDisplay(payload: AnswerPayload): ApprovedAnswerDisplay
       break;
     }
   }
+
+  cleanedAnswer = removeApprovedAnswerTrailingNote(cleanedAnswer);
 
   const sourceCounts = payload.debug?.search?.sourceCounts ?? {};
   const hasApprovedSource = Object.entries(sourceCounts).some(([sourceName, count]) => {
