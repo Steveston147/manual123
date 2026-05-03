@@ -2426,3 +2426,58 @@ body {
   text-indent: 0 !important;
   letter-spacing: 0 !important;
 }
+
+/* =========================================================
+   Safe ASCII icon override
+   Unicode記号が $2713 / $2315 のように表示される環境対策
+   特殊記号を使わず、表示を安定させる
+========================================================= */
+
+.approved-answer-notice h4::before {
+  content: "" !important;
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: none !important;
+  background: transparent !important;
+}
+
+.approved-answer-notice h4 {
+  gap: 0 !important;
+}
+
+.feature-card .feature-icon {
+  font-size: 0 !important;
+  color: transparent !important;
+  overflow: hidden !important;
+}
+
+.feature-card .feature-icon::after {
+  display: grid !important;
+  place-items: center !important;
+  width: 100% !important;
+  height: 100% !important;
+  color: #1d4ed8 !important;
+  font-size: 12px !important;
+  font-weight: 900 !important;
+  line-height: 1 !important;
+  letter-spacing: 0 !important;
+}
+
+.feature-grid .feature-card:nth-child(1) .feature-icon::after {
+  content: "01" !important;
+}
+
+.feature-grid .feature-card:nth-child(2) .feature-icon::after {
+  content: "02" !important;
+}
+
+.feature-grid .feature-card:nth-child(3) .feature-icon::after {
+  content: "03" !important;
+}
+
+.feature-grid .feature-card:nth-child(4) .feature-icon::after {
+  content: "04" !important;
+}
