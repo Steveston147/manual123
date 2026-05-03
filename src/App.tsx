@@ -1272,6 +1272,9 @@ export default function App() {
   const [approvedAnswerSaveErrors, setApprovedAnswerSaveErrors] = useState<
     Record<string, string>
   >({});
+  const [approvedAnswerConfirmTargetId, setApprovedAnswerConfirmTargetId] = useState<
+    string | null
+  >(null);
 
   const [messages, setMessages] = useState<ChatMessage[]>(() => loadMessagesFromStorage());
   const [revisions, setRevisions] = useState<RevisionRecord[]>(() => loadRevisionsFromStorage());
@@ -1340,6 +1343,7 @@ export default function App() {
     setApprovedAnswerSavingIds({});
     setApprovedAnswerSaveMessages({});
     setApprovedAnswerSaveErrors({});
+    setApprovedAnswerConfirmTargetId(null);
   }
 
   function loginAsDemoUser() {
@@ -1627,6 +1631,7 @@ export default function App() {
       persistMessages(updatedMessages);
       setEditTargetId(null);
       setEditedAnswer("");
+      setApprovedAnswerConfirmTargetId(null);
 
       if (settings.revisionNotionWebhookUrl.trim()) {
         try {
@@ -1734,6 +1739,7 @@ export default function App() {
     const isSavingApprovedAnswer = Boolean(approvedAnswerSavingIds[message.id]);
     const approvedAnswerSaveMessage = approvedAnswerSaveMessages[message.id];
     const approvedAnswerSaveError = approvedAnswerSaveErrors[message.id];
+    const isApprovedSaveConfirming = approvedAnswerConfirmTargetId === message.id;
 
     return (
       <article className="answer-card">
@@ -1811,7 +1817,7 @@ export default function App() {
         <section className="revision-panel pro-revision-panel no-print">
           <h2>回答修正</h2>
           <p className="meta">
-            回答を修正した場合、まず画面上の履歴として保存できます。承認済み回答DBへ保存すると、次回以降の優先回答候補として利用する準備ができます。
+            回答を修正した場合、まず画面上の履歴として保存できます。承認済み回答DBへ保存すると、次回以降の優先回答候補として利用されます。保存前には確認画面が表示されます。
           </p>
 
           {editTargetId === message.id ? (
@@ -1834,11 +1840,7 @@ export default function App() {
 
                 <button
                   type="button"
-                  onClick={() =>
-                    saveRevision(message, {
-                      saveToApprovedAnswerDb: true,
-                    })
-                  }
+                  onClick={() => setApprovedAnswerConfirmTargetId(message.id)}
                   disabled={isSavingApprovedAnswer || !editedAnswer.trim()}
                 >
                   {isSavingApprovedAnswer
@@ -1848,12 +1850,53 @@ export default function App() {
 
                 <button
                   type="button"
-                  onClick={() => setEditTargetId(null)}
+                  onClick={() => {
+                    setEditTargetId(null);
+                    setApprovedAnswerConfirmTargetId(null);
+                  }}
                   disabled={isSavingApprovedAnswer}
                 >
                   キャンセル
                 </button>
               </div>
+
+              {isApprovedSaveConfirming && (
+                <div className="approved-save-confirm">
+                  <p className="mini-label">承認済み回答DBへ保存する前の確認</p>
+                  <p className="meta">
+                    この修正回答を保存すると、次回以降、似た質問で優先表示されます。内容、条件、課長確認の要否を確認済みであることを確認してください。
+                  </p>
+                  <ul className="compact-list">
+                    <li>回答内容が現在の運用・Notion記載と矛盾していない</li>
+                    <li>費用・契約・例外対応・個人情報を含む場合は課長確認済み</li>
+                    <li>他のスタッフがそのまま参照しても誤解しにくい表現になっている</li>
+                  </ul>
+
+                  <div className="edit-actions approved-save-confirm-actions">
+                    <button
+                      type="button"
+                      onClick={() => setApprovedAnswerConfirmTargetId(null)}
+                      disabled={isSavingApprovedAnswer}
+                    >
+                      キャンセル
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() =>
+                        saveRevision(message, {
+                          saveToApprovedAnswerDb: true,
+                        })
+                      }
+                      disabled={isSavingApprovedAnswer || !editedAnswer.trim()}
+                    >
+                      {isSavingApprovedAnswer
+                        ? "Notionへ保存中..."
+                        : "確認して承認済み回答DBへ保存"}
+                    </button>
+                  </div>
+                </div>
+              )}
 
               {approvedAnswerSaveMessage && (
                 <p className="meta">{approvedAnswerSaveMessage}</p>
@@ -1870,6 +1913,7 @@ export default function App() {
                 onClick={() => {
                   setEditTargetId(message.id);
                   setEditedAnswer(approvedAnswerDisplay.answer);
+                  setApprovedAnswerConfirmTargetId(null);
                   setApprovedAnswerSaveMessages((current) => ({
                     ...current,
                     [message.id]: "",
